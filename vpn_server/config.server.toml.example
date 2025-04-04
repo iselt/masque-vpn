@@ -1,0 +1,26 @@
+# VPN Server Configuration
+
+# 监听地址和端口
+listen_addr = "0.0.0.0:4433"
+
+# TLS 证书和密钥
+cert_file = "server.crt.pem"
+key_file = "server.key.pem"
+
+# VPN 网络 CIDR，第一个 IP 将作为网关
+assign_cidr = "10.99.22.0/24"
+
+# 向客户端通告的路由
+advertise_routes = [
+  "172.20.0.0/24",
+  "10.99.22.0/24"
+]
+
+# 可选：TUN 设备名称，如果为空则系统自动分配
+# tun_name = "vpntun0"
+
+# 日志级别
+log_level = "info"
+
+# 服务器名称（客户端使用它来验证服务器和URI模板）
+server_name = "vpn.example.com"

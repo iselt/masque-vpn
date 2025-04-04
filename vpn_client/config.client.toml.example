@@ -1,0 +1,28 @@
+# VPN Client Configuration
+
+# Address and port of the VPN server to connect to.
+server_addr = "vpn.example.com:4433" # Use the actual hostname or IP
+
+# Expected server name for TLS verification and URI template.
+# Should match the CN or SAN in the server's certificate AND server_name in server config.
+server_name = "vpn.example.com"
+
+# Optional: Path to a CA certificate file to verify the server's certificate.
+# If empty or omitted, the system's default CAs will be used.
+# ca_file = "ca.crt.pem"
+
+# Set to true to disable server certificate verification (INSECURE, for testing only!)
+insecure_skip_verify = true
+
+# 为 TUN 设备设置的 IP 地址和掩码
+tun_ip = "10.99.22.2/24"
+
+# Optional: Specify the desired TUN device name (e.g., tun0, vpn0).
+# If empty or omitted, the system will assign a name (e.g., tun0, tun1...).
+# tun_name = "tun0"
+
+# Optional: Path to a file for logging TLS session keys (useful for Wireshark).
+key_log_file = "tls_keys.log"
+
+# Optional: Log level (e.g., "debug", "info", "warn", "error")
+log_level = "info"
