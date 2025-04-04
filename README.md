@@ -1,6 +1,6 @@
 # masque-vpn
 
-A VPN implementation based on the MASQUE protocol
+A VPN implementation based on the MASQUE(CONNECT-IP) protocol
 
 ## generate certificates for server
 
