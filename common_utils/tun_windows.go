@@ -53,10 +53,10 @@ func (t *TUNDevice) BatchSize() int {
 func (t *TUNDevice) SetIP(ipPrefix netip.Prefix) error {
 	err := t.luid.SetIPAddresses([]netip.Prefix{ipPrefix})
 	if err != nil {
-		return fmt.Errorf("设置IP地址失败: %v", err)
+		return fmt.Errorf("failed to set IP address: %v", err)
 	}
 	t.ipAddress = ipPrefix.Addr()
-	log.Printf("已分配IP %s 给TUN设备 %s", ipPrefix, t.name)
+	log.Printf("Assigned IP %s to TUN device %s", ipPrefix, t.name)
 	return nil
 }
 
@@ -67,10 +67,10 @@ func (t *TUNDevice) AddRoute(prefix netip.Prefix) error {
 
 	err := t.luid.AddRoute(prefix, nextHop, metric)
 	if err != nil {
-		return fmt.Errorf("添加路由失败: %v", err)
+		return fmt.Errorf("failed to add route: %v", err)
 	}
 
-	log.Printf("添加路由成功: %s via %s", prefix, t.name)
+	log.Printf("Added route: %s via %s", prefix, t.name)
 	return nil
 }
 
@@ -84,22 +84,22 @@ func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
 	// 创建WireGuard TUN设备
 	device, err := tun.CreateTUN(name, 1360)
 	if err != nil {
-		return nil, fmt.Errorf("创建TUN设备失败: %v", err)
+		return nil, fmt.Errorf("failed to create TUN device: %v", err)
 	}
 
 	// 获取接口名称
 	tunName, err := device.Name()
 	if err != nil {
 		device.Close()
-		return nil, fmt.Errorf("获取TUN设备名称失败: %v", err)
+		return nil, fmt.Errorf("failed to get TUN device name: %v", err)
 	}
-	log.Printf("创建TUN设备成功: %s", tunName)
+	log.Printf("Created TUN device: %s", tunName)
 
 	// 获取原生TUN设备
 	nativeTunDevice, ok := device.(*tun.NativeTun)
 	if !ok {
 		device.Close()
-		return nil, fmt.Errorf("无法获取原生TUN设备")
+		return nil, fmt.Errorf("failed to get native TUN device")
 	}
 
 	luid := winipcfg.LUID(nativeTunDevice.LUID())
@@ -115,7 +115,7 @@ func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
 	// 配置IP地址
 	if err := tunDevice.SetIP(ipPrefix); err != nil {
 		device.Close()
-		return nil, fmt.Errorf("配置TUN设备IP失败: %v", err)
+		return nil, fmt.Errorf("failed to configure TUN device IP: %v", err)
 	}
 
 	return tunDevice, nil

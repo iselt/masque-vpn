@@ -1,28 +1,28 @@
-# VPN Client Configuration
+# VPN 客户端配置
 
-# Address and port of the VPN server to connect to.
-server_addr = "vpn.example.com:4433" # Use the actual hostname or IP
+# 要连接的 VPN 服务器地址和端口。
+server_addr = "vpn.example.com:4433" # 使用实际的主机名或 IP
 
-# Expected server name for TLS verification and URI template.
-# Should match the CN or SAN in the server's certificate AND server_name in server config.
+# 用于 TLS 验证和 URI 模板的预期服务器名称。
+# 应该与服务器证书中的 CN 或 SAN 以及服务器配置中的 server_name 匹配。
 server_name = "vpn.example.com"
 
-# Optional: Path to a CA certificate file to verify the server's certificate.
-# If empty or omitted, the system's default CAs will be used.
+# 可选：用于验证服务器证书的 CA 证书文件路径。
+# 如果为空或省略，将使用系统默认的 CA。
 # ca_file = "ca.crt.pem"
 
-# Set to true to disable server certificate verification (INSECURE, for testing only!)
+# 设置为 true 可禁用服务器证书验证（不安全，仅用于测试！）
 insecure_skip_verify = true
 
 # 为 TUN 设备设置的 IP 地址和掩码
 tun_ip = "10.99.22.2/24"
 
-# Optional: Specify the desired TUN device name (e.g., tun0, vpn0).
-# If empty or omitted, the system will assign a name (e.g., tun0, tun1...).
+# 可选：指定所需的 TUN 设备名称（如 tun0, vpn0）。
+# 如果为空或省略，系统将分配一个名称（如 tun0, tun1...）。
 # tun_name = "tun0"
 
-# Optional: Path to a file for logging TLS session keys (useful for Wireshark).
+# 可选：用于记录 TLS 会话密钥的文件路径（对 Wireshark 有用）。
 key_log_file = "tls_keys.log"
 
-# Optional: Log level (e.g., "debug", "info", "warn", "error")
+# 可选：日志级别（如 "debug"、"info"、"warn"、"error"）
 log_level = "info"

@@ -20,21 +20,21 @@ import (
 
 	"github.com/iselt/masque-vpn/common_utils"
 
+	connectip "github.com.quic-go/connect-ip-go"
+	"github.com.quic-go/quic-go/http3"
 	"github.com/BurntSushi/toml"
-	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
 
-// ClientConfig holds configuration values loaded from TOML
+// ClientConfig 结构体，用于存储从 TOML 文件加载的配置信息
 type ClientConfig struct {
 	ServerAddr         string `toml:"server_addr"`
 	ServerName         string `toml:"server_name"`
 	CAFile             string `toml:"ca_file"`
 	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
 	TunName            string `toml:"tun_name"`
-	TunIP              string `toml:"tun_ip"` // 新增：TUN 设备的 IP 地址配置
+	TunIP              string `toml:"tun_ip"`
 	KeyLogFile         string `toml:"key_log_file"`
 	LogLevel           string `toml:"log_level"` // TODO: Implement log levels
 }
@@ -42,13 +42,13 @@ type ClientConfig struct {
 var clientConfig ClientConfig
 
 func main() {
-	// --- Configuration Loading ---
+	// --- 配置加载 ---
 	configFile := "config.client.toml"
 	if _, err := toml.DecodeFile(configFile, &clientConfig); err != nil {
 		log.Fatalf("Error loading config file %s: %v", configFile, err)
 	}
 
-	// --- Basic Validation ---
+	// --- 基础验证 ---
 	if clientConfig.ServerAddr == "" || clientConfig.ServerName == "" {
 		log.Fatal("Missing required configuration values (server_addr, server_name) in config.client.toml")
 	}
@@ -60,7 +60,7 @@ func main() {
 		log.Println("WARNING: Skipping TLS server verification!")
 	}
 
-	// --- Context for Graceful Shutdown ---
+	// --- 创建用于优雅关闭的 Context ---
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -68,7 +68,7 @@ func main() {
 	var tunDev *common_utils.TUNDevice
 	var ipConn *connectip.Conn
 
-	// --- Establish Connection and Setup TUN ---
+	// --- 建立连接并配置 TUN 设备 ---
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -80,7 +80,7 @@ func main() {
 			return
 		}
 		log.Println("Connection established and TUN device configured.")
-		// --- Start Proxying Goroutines ---
+		// --- 启动代理 Goroutine ---
 		errChan := make(chan error, 2)
 		var proxyWg sync.WaitGroup
 
@@ -94,7 +94,7 @@ func main() {
 			common_utils.ProxyFromVPNToTun(tunDev, ipConn, errChan)
 		}()
 
-		// --- Wait for Error or Shutdown Signal ---
+		// --- 等待错误或关闭信号 ---
 		select {
 		case err := <-errChan:
 			log.Printf("Proxying error: %v", err)
@@ -102,7 +102,7 @@ func main() {
 			log.Println("Shutdown signal received, stopping proxy...")
 		}
 
-		// --- Cleanup ---
+		// --- 清理 ---
 		log.Println("Closing connection and TUN device...")
 		if ipConn != nil {
 			ipConn.Close()
@@ -121,9 +121,9 @@ func main() {
 	log.Println("VPN Client exited.")
 }
 
-// establishAndConfigure connects to the server, sets up the TUN device and routing.
+// establishAndConfigure 函数，用于连接服务器，设置 TUN 设备和路由
 func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *connectip.Conn, error) {
-	// --- TLS Configuration ---
+	// --- TLS 配置 ---
 	tlsConfig := &tls.Config{
 		ServerName:         clientConfig.ServerName,
 		InsecureSkipVerify: clientConfig.InsecureSkipVerify,
@@ -153,16 +153,16 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		}
 	}
 
-	// --- QUIC Connection ---
+	// --- QUIC 连接 ---
 	quicConf := &quic.Config{
 		EnableDatagrams: true,
-		// Optional: Set timeouts if needed
+		// 可选：设置超时
 		// HandshakeIdleTimeout: 10 * time.Second,
 		// MaxIdleTimeout: 60 * time.Second,
 	}
 
 	log.Printf("Dialing QUIC connection to %s...", clientConfig.ServerAddr)
-	// We need a UDP socket to dial from
+	// 我们需要一个 UDP socket 来进行拨号
 	udpConn, err := net.ListenUDP("udp", nil) // Let OS choose source IP/port
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to listen on UDP: %w", err)
@@ -174,7 +174,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		return nil, nil, fmt.Errorf("failed to resolve server address %s: %w", clientConfig.ServerAddr, err)
 	}
 
-	// Use context with timeout for dialing
+	// 使用带有超时的 context 进行拨号
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second) // 15 sec dial timeout
 	defer dialCancel()
 
@@ -185,15 +185,15 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 	log.Printf("QUIC connection established to %s", quicConn.RemoteAddr())
 	// Note: quicConn.Close() will be called implicitly when ipConn.Close() is called later.
 
-	// --- HTTP/3 and CONNECT-IP ---
+	// --- HTTP/3 和 CONNECT-IP ---
 	h3RoundTripper := &http3.Transport{
 		EnableDatagrams: true,
 		QUICConfig:      quicConf, // Can reuse config, or nil
 	}
-	// Create an H3 client connection wrapper around the QUIC connection
+	// 创建一个 H3 客户端连接包装器
 	h3ClientConn := h3RoundTripper.NewClientConn(quicConn)
 
-	// Use the configured server name and port for the template
+	// 使用配置的服务器名称和端口作为模板
 	// serverHost, serverPortStr, _ := net.SplitHostPort(clientConfig.ServerAddr)
 	_, serverPortStr, _ := net.SplitHostPort(clientConfig.ServerAddr)
 	serverPort, _ := strconv.Atoi(serverPortStr)
@@ -208,7 +208,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		return nil, nil, fmt.Errorf("failed to dial connect-ip: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Attempt to read body for more info
+		// 尝试读取 body 获取更多信息
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, nil, fmt.Errorf("connect-ip dial failed, server returned status %d: %s", resp.StatusCode, string(bodyBytes))
@@ -216,7 +216,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 	// resp.Body.Close()
 	log.Printf("CONNECT-IP session established.")
 
-	// --- Get Assigned IPs and Routes from Server ---
+	// --- 从服务器获取分配的 IP 和路由 ---
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer fetchCancel()
 
@@ -309,7 +309,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		go monitorAddressAndRouteUpdates(ctx, ipConn, dev)
 	}
 
-	// Return the configured TUN device and the active connect-ip connection
+	// 返回配置的 TUN 设备和活动的 connect-ip 连接
 	return dev, ipConn, nil
 }
 
@@ -356,11 +356,11 @@ func monitorAddressAndRouteUpdates(ctx context.Context, conn *connectip.Conn, tu
 	}
 }
 
-// ipForURL formats an IP address for inclusion in a URL string.
+// ipForURL 格式化 IP 地址以便包含在 URL 字符串中
 func ipForURL(addr netip.Addr) string {
 	if addr.Is4() {
 		return addr.String()
 	}
-	// IPv6 addresses need brackets in URLs
+	// IPv6 地址在 URL 中需要括号
 	return fmt.Sprintf("[%s]", addr)
 }

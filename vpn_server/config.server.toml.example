@@ -1,4 +1,4 @@
-# VPN Server Configuration
+# VPN 服务端配置
 
 # 监听地址和端口
 listen_addr = "0.0.0.0:4433"

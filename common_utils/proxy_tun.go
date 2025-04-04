@@ -16,7 +16,7 @@ import (
 func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- error) {
 	// 获取设备推荐的批处理大小
 	batchSize := dev.BatchSize()
-	log.Printf("TUN设备%s的推荐批处理大小: %d", dev.Name(), batchSize)
+	log.Printf("Recommended batch size for TUN device %s: %d", dev.Name(), batchSize)
 	if batchSize <= 0 {
 		batchSize = 1 // 如果设备没有指定批处理大小，默认为1
 	}
@@ -33,11 +33,11 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 		n, err := dev.Read(bufs, sizes, 0)
 		if err != nil {
 			if errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) {
-				log.Println("TUN设备已关闭，停止Tun->VPN代理。")
+				log.Println("TUN device closed, stopping Tun->VPN proxy.")
 				errChan <- nil
 				return
 			}
-			errChan <- fmt.Errorf("从TUN设备%s读取失败: %w", dev.Name(), err)
+			errChan <- fmt.Errorf("failed to read from TUN device %s: %w", dev.Name(), err)
 			return
 		}
 
@@ -47,7 +47,7 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 				continue
 			}
 
-			// log.Printf("将数据包(%d字节)从TUN设备%s写入connect-ip连接", sizes[i], dev.Name())
+			// log.Printf("Writing packet (%d bytes) from TUN device %s to connect-ip connection", sizes[i], dev.Name())
 
 			// 写入VPN连接
 			icmp, err := ipconn.WritePacket(bufs[i][:sizes[i]])
@@ -55,21 +55,21 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 				var netErr *net.OpError
 				var qErr *quic.ApplicationError
 				if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.As(err, &netErr) || errors.As(err, &qErr) {
-					log.Println("连接已关闭，停止Tun->VPN代理。")
+					log.Println("Connection closed, stopping Tun->VPN proxy.")
 					errChan <- nil
 				} else {
-					errChan <- fmt.Errorf("向connect-ip连接写入数据包失败: %w", err)
+					errChan <- fmt.Errorf("failed to write packet to connect-ip connection: %w", err)
 				}
 				return
 			}
 
 			// 处理ICMP响应
 			if len(icmp) > 0 {
-				log.Printf("将ICMP数据包(%d字节)从connect-ip写回TUN设备%s", len(icmp), dev.Name())
+				log.Printf("Writing ICMP packet (%d bytes) from connect-ip back to TUN device %s", len(icmp), dev.Name())
 				icmpPacket := make([]byte, len(icmp))
 				copy(icmpPacket, icmp)
 				if _, err := dev.Write([][]byte{icmpPacket}, 0); err != nil {
-					log.Printf("警告: 无法将ICMP数据包写入TUN设备%s: %v", dev.Name(), err)
+					log.Printf("Warning: Unable to write ICMP packet to TUN device %s: %v", dev.Name(), err)
 				}
 			}
 		}
@@ -91,10 +91,10 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 			var netErr *net.OpError
 			var qErr *quic.ApplicationError
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.As(err, &netErr) || errors.As(err, &qErr) {
-				log.Println("连接已关闭，停止VPN->Tun代理。")
+				log.Println("Connection closed, stopping VPN->Tun proxy.")
 				errChan <- nil
 			} else {
-				errChan <- fmt.Errorf("从connect-ip连接读取数据包失败: %w", err)
+				errChan <- fmt.Errorf("failed to read packet from connect-ip connection: %w", err)
 			}
 			return
 		}
@@ -103,7 +103,7 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 			continue
 		}
 
-		// log.Printf("将数据包(%d字节)从connect-ip写入TUN设备%s", n, dev.Name())
+		// log.Printf("Writing packet (%d bytes) from connect-ip to TUN device %s", n, dev.Name())
 
 		// 创建数据包副本并为可能的virtio头部预留空间
 		packet := make([]byte, virtioNetHdrLen+n)
@@ -114,10 +114,10 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 		// 最终使用的offset也不会变为负数
 		if _, err := dev.Write([][]byte{packet}, virtioNetHdrLen); err != nil {
 			if errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) {
-				log.Println("TUN设备已关闭，停止VPN->Tun代理。")
+				log.Println("TUN device closed, stopping VPN->Tun proxy.")
 				errChan <- nil
 			} else {
-				errChan <- fmt.Errorf("向TUN设备%s写入数据包失败: %w", dev.Name(), err)
+				errChan <- fmt.Errorf("failed to write packet to TUN device %s: %w", dev.Name(), err)
 			}
 			return
 		}
