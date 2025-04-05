@@ -8,12 +8,11 @@ cert_file = "server.crt.pem"
 key_file = "server.key.pem"
 
 # VPN 网络 CIDR，第一个 IP 将作为网关
-assign_cidr = "10.99.22.0/24"
+assign_cidr = "10.99.0.0/24"
 
 # 向客户端通告的路由
 advertise_routes = [
-  "172.20.0.0/24",
-  "10.99.22.0/24"
+  "10.99.0.0/24"
 ]
 
 # 可选：TUN 设备名称，如果为空则系统自动分配
