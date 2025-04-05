@@ -128,6 +128,11 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		ServerName:         clientConfig.ServerName,
 		InsecureSkipVerify: clientConfig.InsecureSkipVerify,
 		NextProtos:         []string{http3.NextProtoH3}, // Required for http3
+		CipherSuites: []uint16{
+			// tls.TLS_AES_128_GCM_SHA256,
+			tls.TLS_AES_256_GCM_SHA384,
+			// tls.TLS_CHACHA20_POLY1305_SHA256,
+		},
 	}
 	if clientConfig.CAFile != "" {
 		caCert, err := os.ReadFile(clientConfig.CAFile)
@@ -158,7 +163,8 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		EnableDatagrams: true,
 		// 可选：设置超时
 		// HandshakeIdleTimeout: 10 * time.Second,
-		// MaxIdleTimeout: 60 * time.Second,
+		MaxIdleTimeout:  60 * time.Second,
+		KeepAlivePeriod: 30 * time.Second,
 	}
 
 	log.Printf("Dialing QUIC connection to %s...", clientConfig.ServerAddr)
