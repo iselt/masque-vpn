@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"os/signal"
+	"runtime/pprof"
 	"strconv"
 	"sync"
 	"syscall"
@@ -41,6 +43,10 @@ var serverRecvSocket int = -1
 var interfaceAddr netip.Addr
 
 func main() {
+	f, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0644)
+	defer f.Close()
+	pprof.StartCPUProfile(f)
+	defer pprof.StopCPUProfile()
 	// --- 配置加载 ---
 	configFile := "config.server.toml"
 	if _, err := toml.DecodeFile(configFile, &serverConfig); err != nil {
@@ -99,11 +105,6 @@ func main() {
 	}
 	tlsConfig := http3.ConfigureTLSConfig(&tls.Config{
 		Certificates: []tls.Certificate{cert},
-		CipherSuites: []uint16{
-			// tls.TLS_AES_128_GCM_SHA256,
-			tls.TLS_AES_256_GCM_SHA384,
-			// tls.TLS_CHACHA20_POLY1305_SHA256,
-		},
 	})
 
 	// --- QUIC 监听器 ---

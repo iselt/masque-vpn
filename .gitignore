@@ -6,3 +6,5 @@ connect-ip-go
 vpn_server/config.server.toml
 vpn_client/config.client.toml
 vpn_client/tls_keys.log
+vpn_server/cpu.pprof
+vpn_client/cpu.pprof

@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"strconv"
 	"sync"
 	"syscall"
@@ -42,6 +43,10 @@ type ClientConfig struct {
 var clientConfig ClientConfig
 
 func main() {
+	f, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0644)
+	defer f.Close()
+	pprof.StartCPUProfile(f)
+	defer pprof.StopCPUProfile()
 	// --- 配置加载 ---
 	configFile := "config.client.toml"
 	if _, err := toml.DecodeFile(configFile, &clientConfig); err != nil {
@@ -128,11 +133,6 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 		ServerName:         clientConfig.ServerName,
 		InsecureSkipVerify: clientConfig.InsecureSkipVerify,
 		NextProtos:         []string{http3.NextProtoH3}, // Required for http3
-		CipherSuites: []uint16{
-			// tls.TLS_AES_128_GCM_SHA256,
-			tls.TLS_AES_256_GCM_SHA384,
-			// tls.TLS_CHACHA20_POLY1305_SHA256,
-		},
 	}
 	if clientConfig.CAFile != "" {
 		caCert, err := os.ReadFile(clientConfig.CAFile)
