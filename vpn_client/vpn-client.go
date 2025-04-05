@@ -361,12 +361,3 @@ func monitorAddressAndRouteUpdates(ctx context.Context, conn *connectip.Conn, tu
 		}
 	}
 }
-
-// ipForURL 格式化 IP 地址以便包含在 URL 字符串中
-func ipForURL(addr netip.Addr) string {
-	if addr.Is4() {
-		return addr.String()
-	}
-	// IPv6 地址在 URL 中需要括号
-	return fmt.Sprintf("[%s]", addr)
-}
