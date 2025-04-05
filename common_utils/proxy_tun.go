@@ -7,9 +7,29 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
+)
+
+// 定义全局缓冲区池
+var (
+	// 用于VPN到TUN的包传输
+	packetBufferPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, 2048+10) // 预留virtioNetHdr的10字节，加上2048的MTU大小
+			return &buf
+		},
+	}
+
+	// 用于TUN到VPN的批量读取缓冲区
+	tunReadBufferPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, 2048) // 最大MTU大小
+			return &buf
+		},
+	}
 )
 
 // ProxyFromTunToVPN 从TUN设备读取数据包并发送到VPN连接
@@ -24,8 +44,12 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 	// 预分配缓冲区和大小记录数组
 	bufs := make([][]byte, batchSize)
 	sizes := make([]int, batchSize)
+
+	// 从池中获取缓冲区，并在函数退出时归还
 	for i := 0; i < batchSize; i++ {
-		bufs[i] = make([]byte, 2048) // 假设MTU不超过2048
+		bufPtr := tunReadBufferPool.Get().(*[]byte)
+		bufs[i] = *bufPtr
+		defer tunReadBufferPool.Put(bufPtr) // 延迟归还缓冲区
 	}
 
 	for {
@@ -47,8 +71,6 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 				continue
 			}
 
-			// log.Printf("Writing packet (%d bytes) from TUN device %s to connect-ip connection", sizes[i], dev.Name())
-
 			// 写入VPN连接
 			icmp, err := ipconn.WritePacket(bufs[i][:sizes[i]])
 			if err != nil {
@@ -66,11 +88,17 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 			// 处理ICMP响应
 			if len(icmp) > 0 {
 				log.Printf("Writing ICMP packet (%d bytes) from connect-ip back to TUN device %s", len(icmp), dev.Name())
-				icmpPacket := make([]byte, len(icmp))
-				copy(icmpPacket, icmp)
-				if _, err := dev.Write([][]byte{icmpPacket}, 0); err != nil {
+				// 从池中获取ICMP响应缓冲区
+				icmpBufPtr := packetBufferPool.Get().(*[]byte)
+				icmpBuf := *icmpBufPtr
+				copy(icmpBuf[:len(icmp)], icmp)
+
+				if _, err := dev.Write([][]byte{icmpBuf[:len(icmp)]}, 0); err != nil {
 					log.Printf("Warning: Unable to write ICMP packet to TUN device %s: %v", dev.Name(), err)
 				}
+
+				// 使用完毕，归还缓冲区
+				packetBufferPool.Put(icmpBufPtr)
 			}
 		}
 	}
@@ -78,15 +106,17 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 
 // ProxyFromVPNToTun 从VPN连接读取数据包并写入TUN设备
 func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- error) {
-	// 预分配读取缓冲区
-	buf := make([]byte, 2048)
+	// 从池中获取读取缓冲区
+	readBufPtr := packetBufferPool.Get().(*[]byte)
+	readBuf := *readBufPtr
+	defer packetBufferPool.Put(readBufPtr) // 确保函数退出时归还缓冲区
 
-	// 虚拟网络头部大小（对于支持vnetHdr的设备）
+	// 虚拟网络头部大小
 	const virtioNetHdrLen = 10
 
 	for {
-		// 从VPN连接读取数据包
-		n, err := ipconn.ReadPacket(buf)
+		// 从VPN连接读取数据包，直接读入readBuf的有效区域
+		n, err := ipconn.ReadPacket(readBuf[virtioNetHdrLen:])
 		if err != nil {
 			var netErr *net.OpError
 			var qErr *quic.ApplicationError
@@ -103,16 +133,16 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 			continue
 		}
 
-		// log.Printf("Writing packet (%d bytes) from connect-ip to TUN device %s", n, dev.Name())
+		// 从池中获取写入缓冲区
+		writeBufPtr := packetBufferPool.Get().(*[]byte)
+		writeBuf := *writeBufPtr
 
-		// 创建数据包副本并为可能的virtio头部预留空间
-		packet := make([]byte, virtioNetHdrLen+n)
-		// 将实际数据拷贝到预留空间之后
-		copy(packet[virtioNetHdrLen:], buf[:n])
+		// 将数据复制到写入缓冲区，预留虚拟头部空间
+		copy(writeBuf[virtioNetHdrLen:], readBuf[virtioNetHdrLen:virtioNetHdrLen+n])
 
-		// 使用virtioNetHdrLen作为offset，这样即使设备内部减去这个值，
-		// 最终使用的offset也不会变为负数
-		if _, err := dev.Write([][]byte{packet}, virtioNetHdrLen); err != nil {
+		// 写入TUN设备
+		if _, err := dev.Write([][]byte{writeBuf[:virtioNetHdrLen+n]}, virtioNetHdrLen); err != nil {
+			packetBufferPool.Put(writeBufPtr) // 错误情况下也要归还缓冲区
 			if errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) {
 				log.Println("TUN device closed, stopping VPN->Tun proxy.")
 				errChan <- nil
@@ -121,5 +151,8 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 			}
 			return
 		}
+
+		// 使用完毕，归还写入缓冲区
+		packetBufferPool.Put(writeBufPtr)
 	}
 }
