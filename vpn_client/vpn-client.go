@@ -20,10 +20,10 @@ import (
 
 	"github.com/iselt/masque-vpn/common_utils"
 
-	connectip "github.com.quic-go/connect-ip-go"
-	"github.com.quic-go/quic-go/http3"
 	"github.com/BurntSushi/toml"
+	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
 
