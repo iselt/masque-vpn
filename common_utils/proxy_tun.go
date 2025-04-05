@@ -38,19 +38,28 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 	batchSize := dev.BatchSize()
 	log.Printf("Recommended batch size for TUN device %s: %d", dev.Name(), batchSize)
 	if batchSize <= 0 {
-		batchSize = 1 // 如果设备没有指定批处理大小，默认为1
+		batchSize = 32 // 使用合理的默认批处理大小
 	}
 
 	// 预分配缓冲区和大小记录数组
 	bufs := make([][]byte, batchSize)
 	sizes := make([]int, batchSize)
+	bufPtrs := make([]*[]byte, batchSize)
 
-	// 从池中获取缓冲区，并在函数退出时归还
+	// 从池中获取缓冲区
 	for i := 0; i < batchSize; i++ {
-		bufPtr := tunReadBufferPool.Get().(*[]byte)
-		bufs[i] = *bufPtr
-		defer tunReadBufferPool.Put(bufPtr) // 延迟归还缓冲区
+		bufPtrs[i] = tunReadBufferPool.Get().(*[]byte)
+		bufs[i] = *bufPtrs[i]
 	}
+
+	// 确保函数退出时归还缓冲区
+	defer func() {
+		for i := 0; i < batchSize; i++ {
+			if bufPtrs[i] != nil {
+				tunReadBufferPool.Put(bufPtrs[i])
+			}
+		}
+	}()
 
 	for {
 		// 批量读取数据包
@@ -105,19 +114,21 @@ func ProxyFromTunToVPN(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 }
 
 // ProxyFromVPNToTun 从VPN连接读取数据包并写入TUN设备
+// 使用简化但可靠的实现，每次处理一个数据包
 func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- error) {
-	// 从池中获取读取缓冲区
-	readBufPtr := packetBufferPool.Get().(*[]byte)
-	readBuf := *readBufPtr
-	defer packetBufferPool.Put(readBufPtr) // 确保函数退出时归还缓冲区
-
 	// 虚拟网络头部大小
 	const virtioNetHdrLen = 10
 
 	for {
-		// 从VPN连接读取数据包，直接读入readBuf的有效区域
+		// 从池中获取读取缓冲区
+		readBufPtr := packetBufferPool.Get().(*[]byte)
+		readBuf := *readBufPtr
+
+		// 从VPN连接读取数据包
 		n, err := ipconn.ReadPacket(readBuf[virtioNetHdrLen:])
 		if err != nil {
+			packetBufferPool.Put(readBufPtr) // 确保归还缓冲区
+
 			var netErr *net.OpError
 			var qErr *quic.ApplicationError
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.As(err, &netErr) || errors.As(err, &qErr) {
@@ -130,19 +141,17 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 		}
 
 		if n == 0 {
+			packetBufferPool.Put(readBufPtr) // 归还缓冲区
 			continue
 		}
 
-		// 从池中获取写入缓冲区
-		writeBufPtr := packetBufferPool.Get().(*[]byte)
-		writeBuf := *writeBufPtr
-
-		// 将数据复制到写入缓冲区，预留虚拟头部空间
-		copy(writeBuf[virtioNetHdrLen:], readBuf[virtioNetHdrLen:virtioNetHdrLen+n])
+		// 准备写入TUN设备的数据 - 包含virtioNetHdr
+		packet := readBuf[:virtioNetHdrLen+n]
 
 		// 写入TUN设备
-		if _, err := dev.Write([][]byte{writeBuf[:virtioNetHdrLen+n]}, virtioNetHdrLen); err != nil {
-			packetBufferPool.Put(writeBufPtr) // 错误情况下也要归还缓冲区
+		if _, err := dev.Write([][]byte{packet}, virtioNetHdrLen); err != nil {
+			packetBufferPool.Put(readBufPtr) // 错误情况下也要归还缓冲区
+
 			if errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) {
 				log.Println("TUN device closed, stopping VPN->Tun proxy.")
 				errChan <- nil
@@ -152,7 +161,7 @@ func ProxyFromVPNToTun(dev *TUNDevice, ipconn *connectip.Conn, errChan chan<- er
 			return
 		}
 
-		// 使用完毕，归还写入缓冲区
-		packetBufferPool.Put(writeBufPtr)
+		// 使用完毕，归还缓冲区
+		packetBufferPool.Put(readBufPtr)
 	}
 }
