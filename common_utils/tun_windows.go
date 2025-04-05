@@ -22,14 +22,47 @@ type TUNDevice struct {
 	luid      winipcfg.LUID // LUID（Windows使用）
 }
 
-// Read 实现tun.Device接口，直接转发到底层设备
-func (t *TUNDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	return t.device.Read(bufs, sizes, offset)
+// Read 从TUN设备读取数据，适配单个缓冲区模式
+func (t *TUNDevice) Read(buf []byte) (int, error) {
+	// 创建WireGuard TUN所需的缓冲区结构
+	bufs := [][]byte{buf}
+	sizes := []int{0}
+
+	// 调用底层设备的Read方法
+	n, err := t.device.Read(bufs, sizes, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	if n == 0 {
+		return 0, nil
+	}
+
+	if len(bufs) != 1 {
+		return 0, fmt.Errorf("expected 1 buffer, got %d", len(bufs))
+	}
+
+	// 返回实际读取的字节数
+	return sizes[0], nil
 }
 
-// Write 实现tun.Device接口，直接转发到底层设备
-func (t *TUNDevice) Write(bufs [][]byte, offset int) (int, error) {
-	return t.device.Write(bufs, offset)
+// Write 向TUN设备写入数据，适配单个缓冲区模式
+func (t *TUNDevice) Write(buf []byte) (int, error) {
+	// 创建WireGuard TUN所需的缓冲区结构
+	bufs := [][]byte{buf}
+
+	// 调用底层设备的Write方法
+	n, err := t.device.Write(bufs, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	if n == 0 {
+		return 0, nil
+	}
+
+	// 如果成功写入一个包，则返回缓冲区长度
+	return len(buf), nil
 }
 
 func (t *TUNDevice) Close() error {
@@ -82,7 +115,7 @@ func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
 	}
 
 	// 创建WireGuard TUN设备
-	device, err := tun.CreateTUN(name, 1360)
+	device, err := tun.CreateTUN(name, 1400)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device: %v", err)
 	}
