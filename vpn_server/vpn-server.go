@@ -54,7 +54,7 @@ func main() {
 	}
 
 	// --- 创建 IP 分配器 ---
-	networkInfo, err := NewNetworkInfo(serverConfig.AssignCIDR)
+	networkInfo, err := common_utils.NewNetworkInfo(serverConfig.AssignCIDR)
 	if err != nil {
 		log.Fatalf("Failed to create IP allocator: %v", err)
 	}
@@ -197,7 +197,7 @@ func main() {
 
 // 更新客户端连接处理函数
 func handleClientConnection(conn *connectip.Conn, clientID string,
-	tunDev *common_utils.TUNDevice, networkInfo *NetworkInfo, routes []connectip.IPRoute) {
+	tunDev *common_utils.TUNDevice, networkInfo *common_utils.NetworkInfo, routes []connectip.IPRoute) {
 	defer conn.Close()
 
 	log.Printf("Handling connection for client %s", clientID)
