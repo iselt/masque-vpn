@@ -22,64 +22,9 @@ type TUNDevice struct {
 	luid      winipcfg.LUID // LUID（Windows使用）
 }
 
-// Read 从TUN设备读取数据，适配单个缓冲区模式
-func (t *TUNDevice) Read(buf []byte) (int, error) {
-	// 创建WireGuard TUN所需的缓冲区结构
-	bufs := [][]byte{buf}
-	sizes := []int{0}
-
-	// 调用底层设备的Read方法
-	n, err := t.device.Read(bufs, sizes, 0)
-	if err != nil {
-		return 0, err
-	}
-
-	if n == 0 {
-		return 0, nil
-	}
-
-	if len(bufs) != 1 {
-		return 0, fmt.Errorf("expected 1 buffer, got %d", len(bufs))
-	}
-
-	// 返回实际读取的字节数
-	return sizes[0], nil
-}
-
-// Write 向TUN设备写入数据，适配单个缓冲区模式
-func (t *TUNDevice) Write(buf []byte) (int, error) {
-	// 创建WireGuard TUN所需的缓冲区结构
-	bufs := [][]byte{buf}
-
-	// 调用底层设备的Write方法
-	n, err := t.device.Write(bufs, 0)
-	if err != nil {
-		return 0, err
-	}
-
-	if n == 0 {
-		return 0, nil
-	}
-
-	// 如果成功写入一个包，则返回缓冲区长度
-	return len(buf), nil
-}
-
-func (t *TUNDevice) Close() error {
-	return t.device.Close()
-}
-
-func (t *TUNDevice) Name() string {
-	return t.name
-}
-
 // LUID 返回Windows网络接口的LUID
 func (t *TUNDevice) LUID() uint64 {
 	return uint64(t.luid)
-}
-
-func (t *TUNDevice) BatchSize() int {
-	return t.device.BatchSize()
 }
 
 // SetIP 设置TUN设备的IP地址
@@ -115,7 +60,7 @@ func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
 	}
 
 	// 创建WireGuard TUN设备
-	device, err := tun.CreateTUN(name, 1400)
+	device, err := tun.CreateTUN(name, 1380)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device: %v", err)
 	}
@@ -152,9 +97,4 @@ func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
 	}
 
 	return tunDevice, nil
-}
-
-// AddRoute 为指定TUN设备添加路由（全局函数，用于兼容）
-func AddRoute(tunDevice *TUNDevice, prefix netip.Prefix) error {
-	return tunDevice.AddRoute(prefix)
 }
