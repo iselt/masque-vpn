@@ -19,7 +19,7 @@ import (
 	"github.com/iselt/masque-vpn/common_utils" // Import local module
 
 	"github.com/BurntSushi/toml"
-	connectip "github.com/quic-go/connect-ip-go"
+	connectip "github.com/iselt/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"

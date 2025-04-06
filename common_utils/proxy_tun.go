@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 
-	connectip "github.com/quic-go/connect-ip-go"
+	connectip "github.com/iselt/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"golang.zx2c4.com/wireguard/tun"
 )
