@@ -56,3 +56,10 @@ sudo ./vpn-server
 ```bash
 sudo ./vpn-client
 ```
+
+## References
+
+This project is built upon the following open-source libraries:
+
+* [quic-go](https://github.com/quic-go/quic-go) - A QUIC implementation in Go
+* [connect-ip-go](https://github.com/quic-go/connect-ip-go) - A Go implementation of the MASQUE CONNECT-IP protocol
