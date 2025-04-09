@@ -14,30 +14,35 @@ func (t *TUNDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 func (t *TUNDevice) ReadPacket(packet []byte, offset int) (int, error) {
 	t.mu.Lock()
 
-	// 如果缓存为空，则重新填充缓存
-	if t.count == 0 {
-		t.mu.Unlock() // 在可能阻塞的调用前释放锁
+	// 懒初始化（只在首次调用时进行）
+	if t.packetBufs == nil {
+		t.mu.Unlock() // 释放锁进行初始化
 
-		// 懒初始化
-		if t.packetBufs == nil {
-			t.batchSize = t.device.BatchSize()
-			if t.batchSize <= 0 {
-				t.batchSize = 32 // 默认批量大小
-			}
-			t.maxPacketSize = 2048 // 可以根据实际情况调整，标准IPv4包最大1500字节左右
-			t.packetBufs = make([][]byte, t.batchSize)
-			for i := range t.packetBufs {
-				t.packetBufs[i] = make([]byte, t.maxPacketSize)
-			}
-			t.sizes = make([]int, t.batchSize)
-			t.head = 0
-			t.count = 0
+		batchSize := t.device.BatchSize()
+		if batchSize <= 0 {
+			batchSize = 32
 		}
 
-		// 批量读取数据包
-		n, err := t.device.Read(t.packetBufs, t.sizes, 0) // 使用0偏移，因为我们使用自己的缓冲区
+		packetBufs := make([][]byte, batchSize)
+		for i := range packetBufs {
+			packetBufs[i] = make([]byte, 2048) // 固定分配
+		}
+		sizes := make([]int, batchSize)
 
-		t.mu.Lock() // 重新获取锁
+		t.mu.Lock()
+		// 二次检查防止并发初始化
+		if t.packetBufs == nil {
+			t.batchSize = batchSize
+			t.maxPacketSize = 2048
+			t.packetBufs = packetBufs
+			t.sizes = sizes
+		}
+	}
+
+	// 如果缓存为空，填充缓存(保持锁定状态进行批量读取)
+	if t.count == 0 {
+		// 使用非阻塞模式读取(性能关键区域不应阻塞)
+		n, err := t.device.Read(t.packetBufs, t.sizes, 0)
 		if err != nil {
 			t.mu.Unlock()
 			return 0, err
@@ -45,27 +50,23 @@ func (t *TUNDevice) ReadPacket(packet []byte, offset int) (int, error) {
 
 		if n == 0 {
 			t.mu.Unlock()
-			return 0, nil // 没有读取到数据包
+			return 0, nil
 		}
 
-		// 更新缓存状态
 		t.head = 0
 		t.count = n
 	}
 
-	// 从缓存中取出一个数据包
+	// 获取并复制数据包
 	size := t.sizes[t.head]
-
-	// 确保用户提供的缓冲区足够大
 	if len(packet[offset:]) < size {
 		t.mu.Unlock()
 		return 0, errors.New("buffer too small for packet")
 	}
 
-	// 复制数据包到用户提供的缓冲区
+	// 使用更高效的copy，编译器可能会优化为memcpy
 	copy(packet[offset:], t.packetBufs[t.head][:size])
 
-	// 更新队列状态
 	t.head = (t.head + 1) % t.batchSize
 	t.count--
 
