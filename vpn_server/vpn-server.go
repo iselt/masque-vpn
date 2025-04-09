@@ -35,6 +35,7 @@ type ServerConfig struct {
 	TunName         string   `toml:"tun_name"`  // 可选的 TUN 设备名称
 	LogLevel        string   `toml:"log_level"` // TODO: 实现日志级别
 	ServerName      string   `toml:"server_name"`
+	MTU             int      `toml:"mtu"` // 可选的 MTU 设置
 }
 
 var serverConfig ServerConfig
@@ -70,7 +71,7 @@ func main() {
 	log.Printf("Advertised Routes: %v", serverConfig.AdvertiseRoutes)
 
 	// --- 创建 TUN 设备 ---
-	tunDev, err := common_utils.CreateTunDevice(serverConfig.TunName, networkInfo.GetGateway())
+	tunDev, err := common_utils.CreateTunDevice(serverConfig.TunName, networkInfo.GetGateway(), serverConfig.MTU)
 	if err != nil {
 		log.Fatalf("Failed to create TUN device: %v", err)
 	}

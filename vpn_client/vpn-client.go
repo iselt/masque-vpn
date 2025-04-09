@@ -38,6 +38,7 @@ type ClientConfig struct {
 	TunIP              string `toml:"tun_ip"`
 	KeyLogFile         string `toml:"key_log_file"`
 	LogLevel           string `toml:"log_level"` // TODO: Implement log levels
+	MTU                int    `toml:"mtu"`       // 可选的 MTU 设置
 }
 
 var clientConfig ClientConfig
@@ -264,7 +265,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 	log.Printf("Configured TUN IP: %s", tunIPPrefix)
 
 	// --- 使用公共TUN创建函数创建TUN设备 ---
-	dev, err := common_utils.CreateTunDevice(clientConfig.TunName, tunIPPrefix)
+	dev, err := common_utils.CreateTunDevice(clientConfig.TunName, tunIPPrefix, clientConfig.MTU)
 	if err != nil {
 		ipConn.Close()
 		return nil, nil, fmt.Errorf("failed to create and configure TUN device: %w", err)

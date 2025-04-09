@@ -62,14 +62,14 @@ func (t *TUNDevice) AddRoute(prefix netip.Prefix) error {
 }
 
 // CreateTunDevice 在Windows上创建和配置TUN设备
-func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
+func CreateTunDevice(name string, ipPrefix netip.Prefix, mtu int) (*TUNDevice, error) {
 	// 如果名称为空，则使用默认名称
 	if name == "" {
 		name = "masquetun"
 	}
 
 	// 创建WireGuard TUN设备
-	device, err := tun.CreateTUN(name, 1380)
+	device, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device: %v", err)
 	}
