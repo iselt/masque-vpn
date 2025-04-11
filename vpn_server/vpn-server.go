@@ -101,12 +101,26 @@ func main() {
 	})
 
 	// --- QUIC 配置 ---
+	// quicConf := &quic.Config{
+	// 	EnableDatagrams: true,
+	// 	MaxIdleTimeout:  60 * time.Second,
+	// 	KeepAlivePeriod: 30 * time.Second,
+	// }
 	quicConf := &quic.Config{
 		EnableDatagrams: true,
 		MaxIdleTimeout:  60 * time.Second,
 		KeepAlivePeriod: 30 * time.Second,
-	}
 
+		// 流控配置 - 针对 VPN 场景优化
+		InitialStreamReceiveWindow:     4 * 1024 * 1024,  // 4 MB 初始流接收窗口
+		MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB 最大流接收窗口
+		InitialConnectionReceiveWindow: 8 * 1024 * 1024,  // 8 MB 初始连接接收窗口
+		MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB 最大连接接收窗口
+
+		// 流数量限制
+		MaxIncomingStreams:    100, // 最大入站双向流数量
+		MaxIncomingUniStreams: 100, // 最大入站单向流数量
+	}
 	// --- QUIC 监听器 ---
 	listenNetAddr, err := net.ResolveUDPAddr("udp", serverConfig.ListenAddr)
 	if err != nil {
