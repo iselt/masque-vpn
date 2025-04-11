@@ -189,11 +189,11 @@ func main() {
 	log.Println("Shutdown signal received...")
 
 	// 初始化优雅关闭
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // 10秒超时
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 0*time.Second)
 	defer cancel()
 
 	if err := h3Server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Error during HTTP/3 server graceful shutdown: %v", err)
+		log.Printf("HTTP/3 server shutdown ungracefully: %v", err)
 	} else {
 		log.Println("HTTP/3 server shutdown gracefully.")
 	}
