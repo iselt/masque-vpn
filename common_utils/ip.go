@@ -11,23 +11,21 @@ func PrefixToIPNet(prefix netip.Prefix) *net.IPNet {
 	bits := prefix.Bits()
 	addr := prefix.Addr()
 
-	var ipnet *net.IPNet
+	var ip net.IP
+	var mask net.IPMask
+
 	if addr.Is4() {
-		// IPv4
+		// 对IPv4直接使用4字节表示，避免16字节分配
 		ipv4 := addr.As4()
-		ipnet = &net.IPNet{
-			IP:   net.IPv4(ipv4[0], ipv4[1], ipv4[2], ipv4[3]),
-			Mask: net.CIDRMask(bits, 32),
-		}
+		ip = net.IPv4(ipv4[0], ipv4[1], ipv4[2], ipv4[3]).To4()
+		mask = net.CIDRMask(bits, 32)
 	} else {
 		// IPv6
-		ipv6 := addr.As16()
-		ipnet = &net.IPNet{
-			IP:   net.IP(ipv6[:]),
-			Mask: net.CIDRMask(bits, 128),
-		}
+		ip = net.IP(addr.AsSlice()) // 使用AsSlice()避免复制
+		mask = net.CIDRMask(bits, 128)
 	}
-	return ipnet
+
+	return &net.IPNet{IP: ip, Mask: mask}
 }
 
 // LastIP returns the last IP address in a prefix/subnet

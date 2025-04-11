@@ -264,7 +264,10 @@ start:
 		goto start
 	}
 	if err := c.handleIncomingProxiedPacket(data[n:]); err != nil {
-		log.Printf("dropping proxied packet: %s", err)
+		printDrop := false
+		if printDrop {
+			log.Printf("dropping proxied packet: %s", err)
+		}
 		goto start
 	}
 	return copy(b, data[n:]), nil
@@ -345,7 +348,10 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 	data, err := c.composeDatagram(b)
 	if err != nil {
-		log.Printf("dropping proxied packet (%d bytes) that can't be proxied: %s", len(b), err)
+		printDrop := false
+		if printDrop {
+			log.Printf("dropping proxied packet (%d bytes) that can't be proxied: %s", len(b), err)
+		}
 		return nil, nil
 	}
 	if err := c.str.SendDatagram(data); err != nil {

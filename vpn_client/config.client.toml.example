@@ -7,6 +7,9 @@ server_addr = "vpn.example.com:4433" # 使用实际的主机名或 IP
 # 应该与服务器证书中的 CN 或 SAN 以及服务器配置中的 server_name 匹配。
 server_name = "vpn.example.com"
 
+# MTU
+mtu = 1380
+
 # 可选：用于验证服务器证书的 CA 证书文件路径。
 # 如果为空或省略，将使用系统默认的 CA。
 # ca_file = "ca.crt.pem"

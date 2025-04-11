@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
-	"sync"
 
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
@@ -21,14 +20,6 @@ type TUNDevice struct {
 	ipAddress netip.Addr    // IP地址
 	index     int           // 接口索引（Linux使用）
 	luid      winipcfg.LUID // LUID（Windows使用）
-	// 缓存相关字段
-	packetBufs    [][]byte   // 预分配的数据包缓冲区
-	sizes         []int      // 每个缓冲区中数据的实际大小
-	head          int        // 队列头指针
-	count         int        // 队列中当前包的数量
-	batchSize     int        // 每次批量读取的数量
-	maxPacketSize int        // 最大数据包大小
-	mu            sync.Mutex // 保证线程安全
 }
 
 // LUID 返回Windows网络接口的LUID
@@ -62,14 +53,14 @@ func (t *TUNDevice) AddRoute(prefix netip.Prefix) error {
 }
 
 // CreateTunDevice 在Windows上创建和配置TUN设备
-func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
+func CreateTunDevice(name string, ipPrefix netip.Prefix, mtu int) (*TUNDevice, error) {
 	// 如果名称为空，则使用默认名称
 	if name == "" {
 		name = "masquetun"
 	}
 
 	// 创建WireGuard TUN设备
-	device, err := tun.CreateTUN(name, 1380)
+	device, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device: %v", err)
 	}

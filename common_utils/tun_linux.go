@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
-	"sync"
 
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/tun"
@@ -23,14 +22,6 @@ type TUNDevice struct {
 	ipAddress netip.Addr   // IP地址
 	index     int          // 接口索引（Linux使用）
 	link      netlink.Link // Linux网络接口
-	// 缓存相关字段
-	packetBufs    [][]byte   // 预分配的数据包缓冲区
-	sizes         []int      // 每个缓冲区中数据的实际大小
-	head          int        // 队列头指针
-	count         int        // 队列中当前包的数量
-	batchSize     int        // 每次批量读取的数量
-	maxPacketSize int        // 最大数据包大小
-	mu            sync.Mutex // 保证线程安全
 }
 
 // SetIP 设置TUN设备的IP地址为网关IP
@@ -100,14 +91,14 @@ func (t *TUNDevice) AddRoute(prefix netip.Prefix) error {
 }
 
 // CreateTunDevice 在Linux上创建和配置TUN设备
-func CreateTunDevice(name string, ipPrefix netip.Prefix) (*TUNDevice, error) {
+func CreateTunDevice(name string, ipPrefix netip.Prefix, mtu int) (*TUNDevice, error) {
 	// 如果名称为空，则使用默认名称
 	if name == "" {
 		name = "masquetun"
 	}
 
 	// 创建WireGuard TUN设备
-	device, err := tun.CreateTUN(name, 1380)
+	device, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device: %v", err)
 	}
