@@ -33,17 +33,8 @@ func (t *TUNDevice) SetIP(ipPrefix netip.Prefix) error {
 	}
 	t.link = link
 
-	// 创建网络信息，获取网关IP
-	networkInfo, err := NewNetworkInfo(ipPrefix.String())
-	if err != nil {
-		return fmt.Errorf("failed to create network info: %v", err)
-	}
-
-	// 获取网关前缀
-	gatewayPrefix := networkInfo.GetGateway()
-
 	// 转换为*net.IPNet
-	ipNet := PrefixToIPNet(gatewayPrefix)
+	ipNet := PrefixToIPNet(ipPrefix)
 
 	addr := &netlink.Addr{
 		IPNet: ipNet,
@@ -59,10 +50,10 @@ func (t *TUNDevice) SetIP(ipPrefix netip.Prefix) error {
 		return fmt.Errorf("failed to bring up interface: %v", err)
 	}
 
-	t.ipAddress = gatewayPrefix.Addr()
+	t.ipAddress = ipPrefix.Addr()
 	t.index = link.Attrs().Index
 
-	log.Printf("Assigned gateway IP %s to TUN device %s", gatewayPrefix, t.name)
+	log.Printf("Assigned gateway IP %s to TUN device %s", ipPrefix, t.name)
 	return nil
 }
 
