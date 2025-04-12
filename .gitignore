@@ -11,3 +11,5 @@ test.py
 upload.py
 vpn_server/server.crt.pem
 vpn_server/server.key.pem
+*.exe
+*.exe~
