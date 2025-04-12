@@ -41,10 +41,12 @@ type ServerConfig struct {
 var serverConfig ServerConfig
 
 func main() {
-	f, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0666)
-	defer f.Close()
-	pprof.StartCPUProfile(f)
-	defer pprof.StopCPUProfile()
+	if os.Getenv("PERF_PROFILE") != "" {
+		f, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0666)
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	// --- 配置加载 ---
 	configFile := "config.server.toml"
@@ -101,11 +103,6 @@ func main() {
 	})
 
 	// --- QUIC 配置 ---
-	// quicConf := &quic.Config{
-	// 	EnableDatagrams: true,
-	// 	MaxIdleTimeout:  60 * time.Second,
-	// 	KeepAlivePeriod: 30 * time.Second,
-	// }
 	quicConf := &quic.Config{
 		EnableDatagrams: true,
 		MaxIdleTimeout:  60 * time.Second,
@@ -121,6 +118,7 @@ func main() {
 		MaxIncomingStreams:    100, // 最大入站双向流数量
 		MaxIncomingUniStreams: 100, // 最大入站单向流数量
 	}
+
 	// --- QUIC 监听器 ---
 	listenNetAddr, err := net.ResolveUDPAddr("udp", serverConfig.ListenAddr)
 	if err != nil {

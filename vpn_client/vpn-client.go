@@ -44,10 +44,12 @@ type ClientConfig struct {
 var clientConfig ClientConfig
 
 func main() {
-	f, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0666)
-	defer f.Close()
-	pprof.StartCPUProfile(f)
-	defer pprof.StopCPUProfile()
+	if os.Getenv("PERF_PROFILE") != "" {
+		f, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0666)
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 	// --- 配置加载 ---
 	configFile := "config.client.toml"
 	if _, err := toml.DecodeFile(configFile, &clientConfig); err != nil {
@@ -160,13 +162,6 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 	}
 
 	// --- QUIC 连接 ---
-	// quicConf := &quic.Config{
-	// 	EnableDatagrams: true,
-	// 	// 可选：设置超时
-	// 	// HandshakeIdleTimeout: 10 * time.Second,
-	// 	MaxIdleTimeout:  60 * time.Second,
-	// 	KeepAlivePeriod: 30 * time.Second,
-	// }
 	quicConf := &quic.Config{
 		EnableDatagrams: true,
 		MaxIdleTimeout:  60 * time.Second,
