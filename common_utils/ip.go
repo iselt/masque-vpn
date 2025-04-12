@@ -111,3 +111,66 @@ func nextIP(ip netip.Addr) netip.Addr {
 	next, _ := netip.AddrFromSlice(bytes)
 	return next
 }
+
+// GetIPAddresses 从IP包中提取源IP和目标IP地址
+func GetIPAddresses(packet []byte, length int) (src, dst netip.Addr, err error) {
+	if length < 20 { // IPv4头部最小长度为20字节
+		return netip.Addr{}, netip.Addr{}, fmt.Errorf("packet length too short (%d bytes), not a valid IP packet", length)
+	}
+
+	// 检查IP版本(版本号在第一个字节的高4位)
+	version := int(packet[0] >> 4)
+
+	switch version {
+	case 4: // IPv4
+		if length < 20 { // IPv4最小头部长度
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("IPv4 packet too short (%d bytes)", length)
+		}
+
+		// 源IP在字节12-15，目标IP在字节16-19
+		srcIP, ok := netip.AddrFromSlice(packet[12:16])
+		if !ok {
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("invalid source IPv4 address")
+		}
+
+		dstIP, ok := netip.AddrFromSlice(packet[16:20])
+		if !ok {
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("invalid destination IPv4 address")
+		}
+
+		return srcIP, dstIP, nil
+
+	case 6: // IPv6
+		if length < 40 { // IPv6标准头部长度
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("IPv6 packet too short (%d bytes)", length)
+		}
+
+		// 源IP在字节8-23，目标IP在字节24-39
+		srcIP, ok := netip.AddrFromSlice(packet[8:24])
+		if !ok {
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("invalid source IPv6 address")
+		}
+
+		dstIP, ok := netip.AddrFromSlice(packet[24:40])
+		if !ok {
+			return netip.Addr{}, netip.Addr{}, fmt.Errorf("invalid destination IPv6 address")
+		}
+
+		return srcIP, dstIP, nil
+
+	default:
+		return netip.Addr{}, netip.Addr{}, fmt.Errorf("unsupported IP version: %d", version)
+	}
+}
+
+// GetSourceIP 从IP包中提取源IP地址
+func GetSourceIP(packet []byte, length int) (netip.Addr, error) {
+	src, _, err := GetIPAddresses(packet, length)
+	return src, err
+}
+
+// GetDestinationIP 从IP包中提取目标IP地址
+func GetDestinationIP(packet []byte, length int) (netip.Addr, error) {
+	_, dst, err := GetIPAddresses(packet, length)
+	return dst, err
+}
