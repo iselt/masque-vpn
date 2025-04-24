@@ -77,7 +77,6 @@ func (t *TUNDevice) AddRoute(prefix netip.Prefix) error {
 		return fmt.Errorf("failed to add route: %v", err)
 	}
 
-	log.Printf("Added route: %s via %s", prefix, t.name)
 	return nil
 }
 

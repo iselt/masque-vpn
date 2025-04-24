@@ -3,7 +3,7 @@ module github.com/iselt/masque-vpn/common_utils
 go 1.24.2
 
 require (
-	github.com/iselt/connect-ip-go v0.0.0-20241112091351-321f13c3d203
+	github.com/quic-go/connect-ip-go v0.0.0-20241112091351-321f13c3d203
 	github.com/quic-go/quic-go v0.50.1
 	github.com/vishvananda/netlink v1.3.0
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
@@ -30,5 +30,3 @@ require (
 	golang.org/x/tools v0.32.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
-
-replace github.com/iselt/connect-ip-go => ../connect-ip-go

@@ -19,7 +19,7 @@ import (
 	"github.com/iselt/masque-vpn/common_utils" // Import local module
 
 	"github.com/BurntSushi/toml"
-	connectip "github.com/iselt/connect-ip-go"
+	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
@@ -107,16 +107,6 @@ func main() {
 		EnableDatagrams: true,
 		MaxIdleTimeout:  60 * time.Second,
 		KeepAlivePeriod: 30 * time.Second,
-
-		// 流控配置 - 针对 VPN 场景优化
-		InitialStreamReceiveWindow:     4 * 1024 * 1024,  // 4 MB 初始流接收窗口
-		MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB 最大流接收窗口
-		InitialConnectionReceiveWindow: 8 * 1024 * 1024,  // 8 MB 初始连接接收窗口
-		MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB 最大连接接收窗口
-
-		// 流数量限制
-		MaxIncomingStreams:    100, // 最大入站双向流数量
-		MaxIncomingUniStreams: 100, // 最大入站单向流数量
 	}
 
 	// --- QUIC 监听器 ---
