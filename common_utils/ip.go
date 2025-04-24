@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 )
 
 // PrefixToIPNet converts a netip.Prefix to a *net.IPNet
@@ -173,4 +174,61 @@ func GetSourceIP(packet []byte, length int) (netip.Addr, error) {
 func GetDestinationIP(packet []byte, length int) (netip.Addr, error) {
 	_, dst, err := GetIPAddresses(packet, length)
 	return dst, err
+}
+
+// ------------------ IP 地址池（IPAM）实现 ------------------
+
+// IPPool 用于动态分配和回收 IP 地址
+// 线程安全
+// 仅支持 /24 及更小子网（IPv4），IPv6 也支持
+// 分配时跳过网关和网络地址
+
+type IPPool struct {
+	prefix    netip.Prefix
+	gateway   netip.Addr
+	allocated map[netip.Addr]string // IP -> clientID
+	available []netip.Addr
+	mu        sync.Mutex
+}
+
+// NewIPPool 创建 IP 地址池，自动跳过网关和网络地址
+func NewIPPool(prefix netip.Prefix, gateway netip.Addr) *IPPool {
+	ips := []netip.Addr{}
+	start := nextIP(prefix.Addr())
+	end := LastIP(prefix)
+	for ip := start; ip.Compare(end) <= 0; ip = nextIP(ip) {
+		if ip == gateway || ip == prefix.Addr() {
+			continue // 跳过网关和网络地址
+		}
+		ips = append(ips, ip)
+	}
+	return &IPPool{
+		prefix:    prefix,
+		gateway:   gateway,
+		allocated: make(map[netip.Addr]string),
+		available: ips,
+	}
+}
+
+// Allocate 分配一个未分配的 IP，返回 /32 前缀
+func (p *IPPool) Allocate(clientID string) (netip.Prefix, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.available) == 0 {
+		return netip.Prefix{}, fmt.Errorf("no available IP addresses")
+	}
+	ip := p.available[0]
+	p.available = p.available[1:]
+	p.allocated[ip] = clientID
+	return netip.PrefixFrom(ip, 32), nil
+}
+
+// Release 释放 IP 地址
+func (p *IPPool) Release(ip netip.Addr) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.allocated[ip]; ok {
+		delete(p.allocated, ip)
+		p.available = append(p.available, ip)
+	}
 }

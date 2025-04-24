@@ -66,11 +66,11 @@ func main() {
 		log.Fatalf("Failed to create IP allocator: %v", err)
 	}
 
-	log.Printf("Starting VPN Server...")
-	log.Printf("Listen Address: %s", serverConfig.ListenAddr)
-	log.Printf("VPN Network: %s", networkInfo.GetPrefix())
-	log.Printf("Gateway IP: %s", networkInfo.GetGateway())
-	log.Printf("Advertised Routes: %v", serverConfig.AdvertiseRoutes)
+	// 新增：创建全局 IP 地址池
+	ipPool := common_utils.NewIPPool(networkInfo.GetPrefix(), networkInfo.GetGateway().Addr())
+	clientIPMap := make(map[string]netip.Addr)        // clientID -> IP
+	ipConnMap := make(map[netip.Addr]*connectip.Conn) // IP -> conn
+	var ipPoolMu sync.Mutex
 
 	// --- 创建 TUN 设备 ---
 	tunDev, err := common_utils.CreateTunDevice(serverConfig.TunName, networkInfo.GetGateway(), serverConfig.MTU)
@@ -78,6 +78,48 @@ func main() {
 		log.Fatalf("Failed to create TUN device: %v", err)
 	}
 	defer tunDev.Close()
+
+	// 启动TUN->VPN分发goroutine（修正位置）
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, err := tunDev.ReadPacket(buf, 0)
+			if err != nil {
+				log.Printf("TUN read error: %v", err)
+				continue
+			}
+			if n == 0 {
+				continue
+			}
+			packet := make([]byte, n)
+			copy(packet, buf[:n])
+
+			// 提取目标IP
+			dstIP, err := common_utils.GetDestinationIP(packet, n)
+			if err != nil {
+				log.Printf("Failed to parse destination IP: %v", err)
+				continue
+			}
+
+			ipPoolMu.Lock()
+			conn, ok := ipConnMap[dstIP]
+			ipPoolMu.Unlock()
+			if ok {
+				_, err := conn.WritePacket(packet)
+				if err != nil {
+					log.Printf("Failed to forward packet to client %s: %v", dstIP, err)
+				}
+			} else {
+				log.Printf("No client found for destination IP %s", dstIP)
+			}
+		}
+	}()
+
+	log.Printf("Starting VPN Server...")
+	log.Printf("Listen Address: %s", serverConfig.ListenAddr)
+	log.Printf("VPN Network: %s", networkInfo.GetPrefix())
+	log.Printf("Gateway IP: %s", networkInfo.GetGateway())
+	log.Printf("Advertised Routes: %v", serverConfig.AdvertiseRoutes)
 
 	// --- 准备路由信息 ---
 	var routesToAdvertise []connectip.IPRoute
@@ -156,12 +198,25 @@ func main() {
 			return
 		}
 
-		// 为客户端生成唯一 ID (使用其远程地址)
 		clientID := r.RemoteAddr
 		log.Printf("CONNECT-IP session established for %s", clientID)
 
-		// 处理客户端连接
-		go handleClientConnection(conn, clientID, tunDev, networkInfo, routesToAdvertise)
+		// 新增：为客户端分配唯一 IP
+		ipPoolMu.Lock()
+		assignedPrefix, allocErr := ipPool.Allocate(clientID)
+		if allocErr != nil {
+			ipPoolMu.Unlock()
+			log.Printf("No available IP for client %s: %v", clientID, allocErr)
+			conn.Close()
+			return
+		}
+		clientIPMap[clientID] = assignedPrefix.Addr()
+		ipConnMap[assignedPrefix.Addr()] = conn
+		ipPoolMu.Unlock()
+		log.Printf("Allocated IP %s to client %s", assignedPrefix, clientID)
+
+		// 处理客户端连接，传递分配的 IP
+		go handleClientConnection(conn, clientID, tunDev, assignedPrefix, routesToAdvertise, ipPool, &ipPoolMu, clientIPMap, ipConnMap)
 	})
 
 	// --- HTTP/3 Server ---
@@ -207,53 +262,60 @@ func main() {
 
 // handleClientConnection 处理客户端VPN连接
 func handleClientConnection(conn *connectip.Conn, clientID string,
-	tunDev *common_utils.TUNDevice, networkInfo *common_utils.NetworkInfo, routes []connectip.IPRoute) {
+	tunDev *common_utils.TUNDevice, assignedPrefix netip.Prefix, routes []connectip.IPRoute,
+	ipPool *common_utils.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
 	defer conn.Close()
 
 	log.Printf("Handling connection for client %s", clientID)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// --- 为客户端分配 IP 地址 ---
-	networkPrefix := networkInfo.GetPrefix()
-
-	// 向客户端分配网络
-	if err := conn.AssignAddresses(ctx, []netip.Prefix{networkPrefix}); err != nil {
-		log.Printf("Error assigning addresses to client %s: %v", clientID, err)
+	// --- 为客户端分配唯一 IP 前缀 ---
+	if err := conn.AssignAddresses(ctx, []netip.Prefix{assignedPrefix}); err != nil {
+		log.Printf("Error assigning address %s to client %s: %v", assignedPrefix, clientID, err)
+		// 释放 IP
+		ipPoolMu.Lock()
+		ipPool.Release(assignedPrefix.Addr())
+		delete(clientIPMap, clientID)
+		delete(ipConnMap, assignedPrefix.Addr())
+		ipPoolMu.Unlock()
 		return
 	}
-	log.Printf("Assigned network %s to client %s", networkPrefix, clientID)
+	log.Printf("Assigned IP %s to client %s", assignedPrefix, clientID)
 
 	// --- 向客户端广播路由 ---
 	if err := conn.AdvertiseRoute(ctx, routes); err != nil {
 		log.Printf("Error advertising routes to client %s: %v", clientID, err)
+		ipPoolMu.Lock()
+		ipPool.Release(assignedPrefix.Addr())
+		delete(clientIPMap, clientID)
+		delete(ipConnMap, assignedPrefix.Addr())
+		ipPoolMu.Unlock()
 		return
 	}
 	log.Printf("Advertised %d routes to client %s", len(routes), clientID)
 
-	// --- 代理流量 ---
-	errChan := make(chan error, 2)
+	// --- 只保留VPN->TUN方向 ---
+	errChan := make(chan error, 1)
 	var wg sync.WaitGroup
 
-	wg.Add(2)
-	// 从 VPN 连接读取 -> 写入 TUN 设备
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		common_utils.ProxyFromVPNToTun(tunDev, conn, errChan)
 	}()
 
-	// 从 TUN 设备读取 -> 写入 VPN 连接
-	go func() {
-		defer wg.Done()
-		common_utils.ProxyFromTunToVPN(tunDev, conn, errChan)
-	}()
-
-	// 等待错误或关闭
 	err := <-errChan
 	log.Printf("Proxying stopped for client %s: %v", clientID, err)
 	conn.Close()
 
-	// 等待两个代理 goroutine 完成
 	wg.Wait()
 	log.Printf("Finished handling client %s", clientID)
+
+	// 连接结束时释放 IP
+	ipPoolMu.Lock()
+	ipPool.Release(assignedPrefix.Addr())
+	delete(clientIPMap, clientID)
+	delete(ipConnMap, assignedPrefix.Addr())
+	ipPoolMu.Unlock()
 }

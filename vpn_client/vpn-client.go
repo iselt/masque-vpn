@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/signal"
 	"runtime/pprof"
@@ -35,7 +34,6 @@ type ClientConfig struct {
 	CAFile             string `toml:"ca_file"`
 	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
 	TunName            string `toml:"tun_name"`
-	TunIP              string `toml:"tun_ip"`
 	KeyLogFile         string `toml:"key_log_file"`
 	LogLevel           string `toml:"log_level"` // TODO: Implement log levels
 	MTU                int    `toml:"mtu"`       // 可选的 MTU 设置
@@ -240,37 +238,16 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 	}
 	log.Printf("Received network prefix: %v", localPrefixes)
 
-	// 检查配置中是否提供了 TUN IP
-	if clientConfig.TunIP == "" {
-		ipConn.Close()
-		return nil, nil, errors.New("tun_ip not configured in config.client.toml")
-	}
+	// 新逻辑：直接使用服务器分配的唯一 IP 前缀
+	assignedPrefix := localPrefixes[0]
+	log.Printf("Using assigned TUN IP: %s", assignedPrefix)
 
-	// 解析配置的 TUN IP 地址
-	tunIPPrefix, err := netip.ParsePrefix(clientConfig.TunIP)
-	if err != nil {
-		ipConn.Close()
-		return nil, nil, fmt.Errorf("invalid tun_ip configuration '%s': %w", clientConfig.TunIP, err)
-	}
-
-	// 检查 TUN IP 地址是否与服务器分配的网络前缀匹配
-	if !tunIPPrefix.IsValid() {
-		ipConn.Close()
-		return nil, nil, fmt.Errorf("invalid tun_ip configuration '%s': %w", clientConfig.TunIP, err)
-	}
-	if !localPrefixes[0].Contains(tunIPPrefix.Addr()) {
-		ipConn.Close()
-		return nil, nil, fmt.Errorf("configured tun_ip '%s' does not match server assigned prefix '%s'", clientConfig.TunIP, localPrefixes[0])
-	}
-	log.Printf("Configured TUN IP: %s", tunIPPrefix)
-
-	// --- 使用公共TUN创建函数创建TUN设备 ---
-	dev, err := common_utils.CreateTunDevice(clientConfig.TunName, tunIPPrefix, clientConfig.MTU)
+	dev, err := common_utils.CreateTunDevice(clientConfig.TunName, assignedPrefix, clientConfig.MTU)
 	if err != nil {
 		ipConn.Close()
 		return nil, nil, fmt.Errorf("failed to create and configure TUN device: %w", err)
 	}
-	log.Printf("TUN device %s configured with IP %s", dev.Name(), tunIPPrefix)
+	log.Printf("TUN device %s configured with IP %s", dev.Name(), assignedPrefix)
 
 	routes, err := ipConn.Routes(fetchCtx)
 	if err != nil {
