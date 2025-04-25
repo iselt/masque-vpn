@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package common_utils
+package common
 
 import (
 	"fmt"

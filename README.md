@@ -17,14 +17,6 @@ go build
 
 ### Configure
 
-#### Client
-
-```bash
-cp config.client.toml.example config.client.toml
-```
-
-Edit `config.client.toml` accrording to your needs.
-
 #### Server
 
 Generate certificates for server

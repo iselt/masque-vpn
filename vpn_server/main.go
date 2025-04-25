@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"database/sql"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -16,29 +19,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/iselt/masque-vpn/common_utils" // Import local module
-
 	"github.com/BurntSushi/toml"
+	common "github.com/iselt/masque-vpn/common" // Import local module
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
 
-// ServerConfig 结构体，用于存储从 TOML 文件加载的配置信息
-type ServerConfig struct {
-	ListenAddr      string   `toml:"listen_addr"`
-	CertFile        string   `toml:"cert_file"`
-	KeyFile         string   `toml:"key_file"`
-	AssignCIDR      string   `toml:"assign_cidr"` // 整个 VPN 网段配置
-	AdvertiseRoutes []string `toml:"advertise_routes"`
-	TunName         string   `toml:"tun_name"`  // 可选的 TUN 设备名称
-	LogLevel        string   `toml:"log_level"` // TODO: 实现日志级别
-	ServerName      string   `toml:"server_name"`
-	MTU             int      `toml:"mtu"` // 可选的 MTU 设置
-}
-
-var serverConfig ServerConfig
+var serverConfig common.ServerConfig
 
 func main() {
 	if os.Getenv("PERF_PROFILE") != "" {
@@ -49,9 +38,10 @@ func main() {
 	}
 
 	// --- 配置加载 ---
-	configFile := "config.server.toml"
-	if _, err := toml.DecodeFile(configFile, &serverConfig); err != nil {
-		log.Fatalf("Error loading config file %s: %v", configFile, err)
+	configFile := flag.String("c", "config.server.toml", "Config file path")
+	flag.Parse()
+	if _, err := toml.DecodeFile(*configFile, &serverConfig); err != nil {
+		log.Fatalf("Error loading config file %s: %v", *configFile, err)
 	}
 
 	// --- 基础验证 ---
@@ -61,19 +51,19 @@ func main() {
 	}
 
 	// --- 创建 IP 分配器 ---
-	networkInfo, err := common_utils.NewNetworkInfo(serverConfig.AssignCIDR)
+	networkInfo, err := common.NewNetworkInfo(serverConfig.AssignCIDR)
 	if err != nil {
 		log.Fatalf("Failed to create IP allocator: %v", err)
 	}
 
 	// 新增：创建全局 IP 地址池
-	ipPool := common_utils.NewIPPool(networkInfo.GetPrefix(), networkInfo.GetGateway().Addr())
+	ipPool := common.NewIPPool(networkInfo.GetPrefix(), networkInfo.GetGateway().Addr())
 	clientIPMap := make(map[string]netip.Addr)        // clientID -> IP
 	ipConnMap := make(map[netip.Addr]*connectip.Conn) // IP -> conn
 	var ipPoolMu sync.Mutex
 
 	// --- 创建 TUN 设备 ---
-	tunDev, err := common_utils.CreateTunDevice(serverConfig.TunName, networkInfo.GetGateway(), serverConfig.MTU)
+	tunDev, err := common.CreateTunDevice(serverConfig.TunName, networkInfo.GetGateway(), serverConfig.MTU)
 	if err != nil {
 		log.Fatalf("Failed to create TUN device: %v", err)
 	}
@@ -95,7 +85,7 @@ func main() {
 			copy(packet, buf[:n])
 
 			// 提取目标IP
-			dstIP, err := common_utils.GetDestinationIP(packet, n)
+			dstIP, err := common.GetDestinationIP(packet, n)
 			if err != nil {
 				log.Printf("Failed to parse destination IP: %v", err)
 				continue
@@ -130,18 +120,51 @@ func main() {
 		}
 		routesToAdvertise = append(routesToAdvertise, connectip.IPRoute{
 			StartIP:    prefix.Addr(),
-			EndIP:      common_utils.LastIP(prefix),
+			EndIP:      common.LastIP(prefix),
 			IPProtocol: 0, // 0 表示任何协议
 		})
 	}
 
 	// --- TLS 配置 ---
-	cert, err := tls.LoadX509KeyPair(serverConfig.CertFile, serverConfig.KeyFile)
-	if err != nil {
-		log.Fatalf("Failed to load TLS certificate/key: %v", err)
+	var cert tls.Certificate
+	if serverConfig.CertPEM != "" && serverConfig.KeyPEM != "" {
+		cert, err = tls.X509KeyPair([]byte(serverConfig.CertPEM), []byte(serverConfig.KeyPEM))
+		if err != nil {
+			log.Fatalf("Failed to load TLS certificate/key from config PEM: %v", err)
+		}
+		log.Printf("Loaded TLS certificate/key from config PEM")
+	} else {
+		cert, err = tls.LoadX509KeyPair(serverConfig.CertFile, serverConfig.KeyFile)
+		if err != nil {
+			log.Fatalf("Failed to load TLS certificate/key: %v", err)
+		}
+		log.Printf("Loaded TLS certificate/key from file: %s, %s", serverConfig.CertFile, serverConfig.KeyFile)
 	}
+
+	// 加载CA证书
+	caCertPool := x509.NewCertPool()
+	var caCert []byte
+	if serverConfig.CAPEM != "" {
+		caCert = []byte(serverConfig.CAPEM)
+		log.Printf("Loaded CA cert from config PEM")
+	} else {
+		if serverConfig.CAFile == "" {
+			log.Fatal("ca_file is required for mutual TLS authentication")
+		}
+		caCert, err = os.ReadFile(serverConfig.CAFile)
+		if err != nil {
+			log.Fatalf("Failed to read CA file %s: %v", serverConfig.CAFile, err)
+		}
+		log.Printf("Loaded CA cert from file: %s", serverConfig.CAFile)
+	}
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		log.Fatalf("Failed to append CA cert")
+	}
+
 	tlsConfig := http3.ConfigureTLSConfig(&tls.Config{
 		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    caCertPool,
 	})
 
 	// --- QUIC 配置 ---
@@ -184,6 +207,36 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/vpn", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Incoming VPN request from %s", r.RemoteAddr)
+		// 新增：提取 client_id（证书 CommonName）
+		var clientID string
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			clientID = r.TLS.PeerCertificates[0].Subject.CommonName
+		} else {
+			http.Error(w, "未检测到客户端证书", http.StatusUnauthorized)
+			return
+		}
+		// 新增：校验 client_id 是否在数据库中
+		clientIDExists := func(id string) bool {
+			db, err := sql.Open("sqlite3", "masque_admin.db")
+			if err != nil {
+				log.Printf("Error opening database: %v", err) // Log the error
+				return false
+			}
+			defer db.Close()
+			var count int
+			err = db.QueryRow("SELECT COUNT(*) FROM clients WHERE client_id = ?", id).Scan(&count)
+			if err != nil {
+				log.Printf("Error querying database for client_id %s: %v", id, err) // Log the error
+				return false
+			}
+			return count > 0
+		}
+		if !clientIDExists(clientID) {
+			log.Printf("拒绝未知 client_id 连接: %s", clientID)
+			http.Error(w, "客户端未授权或已被删除", http.StatusUnauthorized)
+			return
+		}
+
 		req, err := connectip.ParseRequest(r, template)
 		if err != nil {
 			log.Printf("Failed to parse connect-ip request: %v", err)
@@ -198,7 +251,6 @@ func main() {
 			return
 		}
 
-		clientID := r.RemoteAddr
 		log.Printf("CONNECT-IP session established for %s", clientID)
 
 		// 新增：为客户端分配唯一 IP
@@ -218,6 +270,12 @@ func main() {
 		// 处理客户端连接，传递分配的 IP
 		go handleClientConnection(conn, clientID, tunDev, assignedPrefix, routesToAdvertise, ipPool, &ipPoolMu, clientIPMap, ipConnMap)
 	})
+
+	// 新增：API服务goroutine
+	go func() {
+		// 直接传递原始的 ipConnMap
+		StartAPIServer(&ipPoolMu, clientIPMap, ipConnMap)
+	}()
 
 	// --- HTTP/3 Server ---
 	h3Server := http3.Server{
@@ -262,8 +320,8 @@ func main() {
 
 // handleClientConnection 处理客户端VPN连接
 func handleClientConnection(conn *connectip.Conn, clientID string,
-	tunDev *common_utils.TUNDevice, assignedPrefix netip.Prefix, routes []connectip.IPRoute,
-	ipPool *common_utils.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
+	tunDev *common.TUNDevice, assignedPrefix netip.Prefix, routes []connectip.IPRoute,
+	ipPool *common.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
 	defer conn.Close()
 
 	log.Printf("Handling connection for client %s", clientID)
@@ -302,7 +360,7 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		common_utils.ProxyFromVPNToTun(tunDev, conn, errChan)
+		common.ProxyFromVPNToTun(tunDev, conn, errChan)
 	}()
 
 	err := <-errChan
@@ -314,8 +372,11 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 
 	// 连接结束时释放 IP
 	ipPoolMu.Lock()
-	ipPool.Release(assignedPrefix.Addr())
-	delete(clientIPMap, clientID)
-	delete(ipConnMap, assignedPrefix.Addr())
+	// 修复：只有当 clientID 还在 clientIPMap 时才释放，避免被 API 删除后重复释放
+	if ip, ok := clientIPMap[clientID]; ok && ip == assignedPrefix.Addr() {
+		ipPool.Release(assignedPrefix.Addr())
+		delete(clientIPMap, clientID)
+		delete(ipConnMap, assignedPrefix.Addr())
+	}
 	ipPoolMu.Unlock()
 }

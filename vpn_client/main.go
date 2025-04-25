@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -18,28 +19,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/iselt/masque-vpn/common_utils"
-
 	"github.com/BurntSushi/toml"
+	common "github.com/iselt/masque-vpn/common"
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
 
-// ClientConfig 结构体，用于存储从 TOML 文件加载的配置信息
-type ClientConfig struct {
-	ServerAddr         string `toml:"server_addr"`
-	ServerName         string `toml:"server_name"`
-	CAFile             string `toml:"ca_file"`
-	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
-	TunName            string `toml:"tun_name"`
-	KeyLogFile         string `toml:"key_log_file"`
-	LogLevel           string `toml:"log_level"` // TODO: Implement log levels
-	MTU                int    `toml:"mtu"`       // 可选的 MTU 设置
-}
-
-var clientConfig ClientConfig
+var clientConfig common.ClientConfig
 
 func main() {
 	if os.Getenv("PERF_PROFILE") != "" {
@@ -49,9 +37,10 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 	// --- 配置加载 ---
-	configFile := "config.client.toml"
-	if _, err := toml.DecodeFile(configFile, &clientConfig); err != nil {
-		log.Fatalf("Error loading config file %s: %v", configFile, err)
+	configFile := flag.String("c", "config.client.toml", "Config file path")
+	flag.Parse()
+	if _, err := toml.DecodeFile(*configFile, &clientConfig); err != nil {
+		log.Fatalf("Error loading config file %s: %v", *configFile, err)
 	}
 
 	// --- 基础验证 ---
@@ -71,7 +60,7 @@ func main() {
 	defer stop()
 
 	var wg sync.WaitGroup
-	var tunDev *common_utils.TUNDevice
+	var tunDev *common.TUNDevice
 	var ipConn *connectip.Conn
 
 	// --- 建立连接并配置 TUN 设备 ---
@@ -93,11 +82,11 @@ func main() {
 		proxyWg.Add(2)
 		go func() {
 			defer proxyWg.Done()
-			common_utils.ProxyFromTunToVPN(tunDev, ipConn, errChan)
+			common.ProxyFromTunToVPN(tunDev, ipConn, errChan)
 		}()
 		go func() {
 			defer proxyWg.Done()
-			common_utils.ProxyFromVPNToTun(tunDev, ipConn, errChan)
+			common.ProxyFromVPNToTun(tunDev, ipConn, errChan)
 		}()
 
 		// --- 等待错误或关闭信号 ---
@@ -128,14 +117,23 @@ func main() {
 }
 
 // establishAndConfigure 函数，用于连接服务器，设置 TUN 设备和路由
-func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *connectip.Conn, error) {
+func establishAndConfigure(ctx context.Context) (*common.TUNDevice, *connectip.Conn, error) {
 	// --- TLS 配置 ---
 	tlsConfig := &tls.Config{
 		ServerName:         clientConfig.ServerName,
 		InsecureSkipVerify: clientConfig.InsecureSkipVerify,
 		NextProtos:         []string{http3.NextProtoH3}, // Required for http3
 	}
-	if clientConfig.CAFile != "" {
+	// 优先从 PEM 字符串加载 CA
+	if clientConfig.CAPEM != "" {
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM([]byte(clientConfig.CAPEM)) {
+			return nil, nil, fmt.Errorf("failed to append CA cert from config ca_pem")
+		}
+		tlsConfig.RootCAs = caCertPool
+		tlsConfig.InsecureSkipVerify = false
+		log.Printf("Using custom CA from config ca_pem")
+	} else if clientConfig.CAFile != "" {
 		caCert, err := os.ReadFile(clientConfig.CAFile)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to read CA file %s: %w", clientConfig.CAFile, err)
@@ -145,8 +143,26 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 			return nil, nil, fmt.Errorf("failed to append CA cert from %s", clientConfig.CAFile)
 		}
 		tlsConfig.RootCAs = caCertPool
-		tlsConfig.InsecureSkipVerify = false // Can't skip verify if using custom CA
+		tlsConfig.InsecureSkipVerify = false
 		log.Printf("Using custom CA file: %s", clientConfig.CAFile)
+	}
+	// 优先从 PEM 字符串加载证书和密钥
+	if clientConfig.CertPEM != "" && clientConfig.KeyPEM != "" {
+		cert, err := tls.X509KeyPair([]byte(clientConfig.CertPEM), []byte(clientConfig.KeyPEM))
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load client certificate/key from config PEM: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+		log.Printf("Loaded client certificate/key from config PEM")
+	} else if clientConfig.TLSCert != "" && clientConfig.TLSKey != "" {
+		cert, err := tls.LoadX509KeyPair(clientConfig.TLSCert, clientConfig.TLSKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load client certificate/key: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+		log.Printf("Loaded client certificate: %s", clientConfig.TLSCert)
+	} else {
+		return nil, nil, fmt.Errorf("tls_cert and tls_key or cert_pem and key_pem must be set in config for mutual TLS authentication")
 	}
 	if clientConfig.KeyLogFile != "" {
 		keyLogWriter, err := os.OpenFile(clientConfig.KeyLogFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
@@ -242,7 +258,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 	assignedPrefix := localPrefixes[0]
 	log.Printf("Using assigned TUN IP: %s", assignedPrefix)
 
-	dev, err := common_utils.CreateTunDevice(clientConfig.TunName, assignedPrefix, clientConfig.MTU)
+	dev, err := common.CreateTunDevice(clientConfig.TunName, assignedPrefix, clientConfig.MTU)
 	if err != nil {
 		ipConn.Close()
 		return nil, nil, fmt.Errorf("failed to create and configure TUN device: %w", err)
@@ -298,7 +314,7 @@ func establishAndConfigure(ctx context.Context) (*common_utils.TUNDevice, *conne
 }
 
 // 监控地址和路由更新的协程
-func monitorAddressAndRouteUpdates(ctx context.Context, conn *connectip.Conn, tunDev *common_utils.TUNDevice) {
+func monitorAddressAndRouteUpdates(ctx context.Context, conn *connectip.Conn, tunDev *common.TUNDevice) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -317,7 +333,7 @@ func monitorAddressAndRouteUpdates(ctx context.Context, conn *connectip.Conn, tu
 				// 这里可以添加处理地址变更的逻辑
 				// 目前仅记录，实际应用中可能需要更新TUN设备地址
 				log.Printf("Current TUN device(%s) IP: %s", tunDev.Name(), localPrefixes[0])
-				// 例如：如果需要更新 TUN 设备的 IP 地址，可以在这里调用 common_utils.CreateTunDevice 函数
+				// 例如：如果需要更新 TUN 设备的 IP 地址，可以在这里调用 common.CreateTunDevice 函数
 			}
 
 			// 检查路由更新

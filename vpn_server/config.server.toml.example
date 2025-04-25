@@ -3,9 +3,10 @@
 # 监听地址和端口
 listen_addr = "0.0.0.0:4433"
 
-# TLS 证书和密钥
-cert_file = "server.crt.pem"
-key_file = "server.key.pem"
+# mTLS
+cert_file = "server.crt"
+key_file = "server.key"
+ca_file = "ca.crt"
 
 # VPN 网络 CIDR，第一个 IP 将作为网关
 assign_cidr = "10.99.0.0/24"
@@ -23,3 +24,5 @@ log_level = "info"
 
 # 服务器名称（客户端使用它来验证服务器和URI模板）
 server_name = "vpn.example.com"
+
+mtu = 1413

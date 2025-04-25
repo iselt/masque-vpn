@@ -11,7 +11,7 @@ test.py
 upload.py
 vpn_server/server.crt.pem
 vpn_server/server.key.pem
-*.exe
-*.exe~
-datagram_test
-tun_test
+*.key
+*.crt
+*.csr
+*.srl

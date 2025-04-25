@@ -1,7 +1,7 @@
 //go:build windows
 // +build windows
 
-package common_utils
+package common
 
 import (
 	"fmt"

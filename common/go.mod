@@ -1,4 +1,4 @@
-module github.com/iselt/masque-vpn/common_utils
+module github.com/iselt/masque-vpn/common
 
 go 1.24.2
 
