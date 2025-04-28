@@ -4,10 +4,12 @@ go 1.24.2
 
 require (
 	github.com/BurntSushi/toml v1.5.0
-	github.com/iselt/connect-ip-go v0.0.0-20241112091351-321f13c3d203
-	github.com/iselt/masque-vpn/common_utils v0.0.0-00010101000000-000000000000
+	github.com/iselt/masque-vpn/common v0.0.0-00010101000000-000000000000
+	github.com/mattn/go-sqlite3 v1.14.28
+	github.com/quic-go/connect-ip-go v0.0.0-20241112091351-321f13c3d203
 	github.com/quic-go/quic-go v0.50.1
 	github.com/yosida95/uritemplate/v3 v3.0.2
+	golang.org/x/crypto v0.37.0
 )
 
 require (
@@ -20,7 +22,6 @@ require (
 	github.com/vishvananda/netns v0.0.4 // indirect
 	go.uber.org/automaxprocs v1.6.0 // indirect
 	go.uber.org/mock v0.5.1 // indirect
-	golang.org/x/crypto v0.37.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.39.0 // indirect
@@ -33,6 +34,4 @@ require (
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 )
 
-replace github.com/iselt/masque-vpn/common_utils => ../common_utils
-
-replace github.com/iselt/connect-ip-go => ../connect-ip-go
+replace github.com/iselt/masque-vpn/common => ../common

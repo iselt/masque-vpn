@@ -1,0 +1,35 @@
+# VPN 客户端配置
+
+# 要连接的 VPN 服务器地址和端口。
+server_addr = "{{server_addr}}"
+
+# 用于 TLS 验证和 URI 模板的预期服务器名称。
+server_name = "{{server_name}}"
+
+# MTU
+mtu = {{mtu}}
+
+# mTLS 证书内容直接嵌入
+ca_pem = '''
+{{ca_pem}}
+'''
+
+cert_pem = '''
+{{cert_pem}}
+'''
+
+key_pem = '''
+{{key_pem}}
+'''
+
+# 设置为 true 可禁用服务器证书验证（不安全，仅用于测试！）
+insecure_skip_verify = {{insecure_skip_verify}}
+
+# 可选：指定所需的 TUN 设备名称（如 tun0, vpn0）。
+tun_name = "{{tun_name}}"
+
+# 可选：用于记录 TLS 会话密钥的文件路径（对 Wireshark 有用）。
+key_log_file = "{{key_log_file}}"
+
+# 可选：日志级别（如 "debug"、"info"、"warn"、"error"）
+log_level = "{{log_level}}"
