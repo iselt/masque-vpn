@@ -144,18 +144,18 @@ func main() {
 	// 加载CA证书
 	caCertPool := x509.NewCertPool()
 	var caCert []byte
-	if serverConfig.CAPEM != "" {
-		caCert = []byte(serverConfig.CAPEM)
+	if serverConfig.CACertPEM != "" {
+		caCert = []byte(serverConfig.CACertPEM)
 		log.Printf("Loaded CA cert from config PEM")
 	} else {
-		if serverConfig.CAFile == "" {
+		if serverConfig.CACertFile == "" {
 			log.Fatal("ca_file is required for mutual TLS authentication")
 		}
-		caCert, err = os.ReadFile(serverConfig.CAFile)
+		caCert, err = os.ReadFile(serverConfig.CACertFile)
 		if err != nil {
-			log.Fatalf("Failed to read CA file %s: %v", serverConfig.CAFile, err)
+			log.Fatalf("Failed to read CA file %s: %v", serverConfig.CACertFile, err)
 		}
-		log.Printf("Loaded CA cert from file: %s", serverConfig.CAFile)
+		log.Printf("Loaded CA cert from file: %s", serverConfig.CACertFile)
 	}
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		log.Fatalf("Failed to append CA cert")
@@ -273,8 +273,8 @@ func main() {
 
 	// 新增：API服务goroutine
 	go func() {
-		// 直接传递原始的 ipConnMap
-		StartAPIServer(&ipPoolMu, clientIPMap, ipConnMap)
+		// 传递 serverConfig 给 API Server
+		StartAPIServer(&ipPoolMu, clientIPMap, ipConnMap, serverConfig)
 	}()
 
 	// --- HTTP/3 Server ---

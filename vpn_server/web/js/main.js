@@ -1,43 +1,4 @@
 document.addEventListener('DOMContentLoaded', function() {
-    // 检查CA状态
-    fetch('/api/ca_status').then(async resp => {
-        if (resp.status === 401) {
-            window.location.href = 'login.html';
-            return;
-        }
-        if (!resp.ok) throw new Error('网络错误');
-        const data = await resp.json();
-        if (!data.exists) {
-            document.getElementById('caModal').style.display = 'flex';
-        }
-    }).catch(() => {
-        document.getElementById('caStatusMsg').textContent = '无法检测CA状态，请检查网络或后端服务。';
-    });
-
-    // 生成CA按钮
-    document.getElementById('genCaBtn').onclick = function() {
-        this.disabled = true;
-        this.textContent = '生成中...';
-        fetch('/api/gen_ca_server', { method: 'POST' }).then(async resp => {
-            if (resp.status === 401) {
-                window.location.href = 'login.html';
-                return;
-            }
-            if (resp.ok) {
-                document.getElementById('caModal').style.display = 'none';
-                document.getElementById('caStatusMsg').textContent = 'CA证书已生成。';
-            } else {
-                const msg = await resp.text();
-                alert('生成失败：' + msg);
-                this.disabled = false;
-                this.textContent = '生成CA';
-            }
-        }).catch(() => {
-            alert('网络错误，生成失败');
-            this.disabled = false;
-            this.textContent = '生成CA';
-        });
-    };
 
     // 客户端管理区交互
 let highlightClientId = null;

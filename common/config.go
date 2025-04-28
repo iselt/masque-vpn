@@ -26,10 +26,12 @@ type ServerConfig struct {
 	ListenAddr      string   `toml:"listen_addr"`
 	CertFile        string   `toml:"cert_file"`
 	KeyFile         string   `toml:"key_file"`
-	CAFile          string   `toml:"ca_file"`
+	CACertFile      string   `toml:"ca_cert_file"`
+	CAKeyFile       string   `toml:"ca_key_file"`
 	CertPEM         string   `toml:"cert_pem"`
 	KeyPEM          string   `toml:"key_pem"`
-	CAPEM           string   `toml:"ca_pem"`
+	CAKeyPEM        string   `toml:"ca_key_pem"`
+	CACertPEM       string   `toml:"ca_cert_pem"`
 	AssignCIDR      string   `toml:"assign_cidr"`
 	AdvertiseRoutes []string `toml:"advertise_routes"`
 	TunName         string   `toml:"tun_name"`

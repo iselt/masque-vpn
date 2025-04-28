@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	common "github.com/iselt/masque-vpn/common"
 	_ "github.com/mattn/go-sqlite3"
 	connectip "github.com/quic-go/connect-ip-go" // 新增导入
 )
@@ -169,14 +170,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleCAStatus(w http.ResponseWriter, r *http.Request) {
-	_, err1 := os.Stat("ca.crt")
-	_, err2 := os.Stat("ca.key")
-	exists := err1 == nil && err2 == nil
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"exists": exists})
-}
-
 // 获取所有客户端信息（含在线状态）
 func handleListClients(clientIPMap map[string]netip.Addr) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -211,147 +204,157 @@ func handleListClients(clientIPMap map[string]netip.Addr) http.HandlerFunc {
 }
 
 // 生成客户端证书并写入数据库，返回client_id
-func handleGenClientV2(w http.ResponseWriter, r *http.Request) {
-	// ...证书生成逻辑同前...
-	caCertPEM, err := os.ReadFile("ca.crt")
-	if err != nil {
-		http.Error(w, "CA证书不存在，请先生成CA", 500)
-		return
-	}
-	caKeyPEM, err := os.ReadFile("ca.key")
-	if err != nil {
-		http.Error(w, "CA私钥不存在，请先生成CA", 500)
-		return
-	}
-	block, _ := pem.Decode(caKeyPEM)
-	if block == nil {
-		http.Error(w, "CA私钥格式错误", 500)
-		return
-	}
-	var caKey *rsa.PrivateKey
-	if block.Type == "RSA PRIVATE KEY" {
-		caKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+func handleGenClientV2(serverConfig interface{}) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cfg := serverConfig.(common.ServerConfig)
+		// 优先使用 CAPEM/KeyPEM，否则用 CAFile/KeyFile
+		var caCertPEM, caKeyPEM []byte
+		var err error
+		if cfg.CACertPEM != "" && cfg.CAKeyPEM != "" {
+			caCertPEM = []byte(cfg.CACertPEM)
+			caKeyPEM = []byte(cfg.CAKeyPEM)
+		} else {
+			caCertPEM, err = os.ReadFile(cfg.CACertFile)
+			if err != nil {
+				http.Error(w, "CA证书不存在，请先生成CA", 500)
+				return
+			}
+			caKeyPEM, err = os.ReadFile(cfg.CAKeyFile)
+			if err != nil {
+				http.Error(w, "CA私钥不存在，请先生成CA", 500)
+				return
+			}
+		}
+		block, _ := pem.Decode(caKeyPEM)
+		if block == nil {
+			http.Error(w, "CA私钥格式错误", 500)
+			return
+		}
+		var caKey *rsa.PrivateKey
+		if block.Type == "RSA PRIVATE KEY" {
+			caKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+			if err != nil {
+				http.Error(w, "解析CA私钥失败", 500)
+				return
+			}
+		} else if block.Type == "PRIVATE KEY" {
+			keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+			if err != nil {
+				http.Error(w, "解析PKCS#8 CA私钥失败", 500)
+				return
+			}
+			var ok bool
+			caKey, ok = keyAny.(*rsa.PrivateKey)
+			if !ok {
+				http.Error(w, "CA私钥不是RSA类型", 500)
+				return
+			}
+		} else {
+			http.Error(w, "CA私钥格式错误(未知类型)", 500)
+			return
+		}
+		caBlock, _ := pem.Decode(caCertPEM)
+		if caBlock == nil || caBlock.Type != "CERTIFICATE" {
+			http.Error(w, "CA证书格式错误", 500)
+			return
+		}
+		caCert, err := x509.ParseCertificate(caBlock.Bytes)
 		if err != nil {
-			http.Error(w, "解析CA私钥失败", 500)
+			http.Error(w, "解析CA证书失败", 500)
 			return
 		}
-	} else if block.Type == "PRIVATE KEY" {
-		keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		clientPriv, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			http.Error(w, "解析PKCS#8 CA私钥失败", 500)
+			http.Error(w, "生成客户端私钥失败", 500)
 			return
 		}
-		var ok bool
-		caKey, ok = keyAny.(*rsa.PrivateKey)
-		if !ok {
-			http.Error(w, "CA私钥不是RSA类型", 500)
+		// 生成8位字母数字clientID
+		letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+		b := make([]rune, 8)
+		randBytes := make([]byte, 8)
+		rand.Read(randBytes)
+		for i := 0; i < 8; i++ {
+			b[i] = letters[int(randBytes[i])%len(letters)]
+		}
+		clientID := "client-" + string(b)
+		clientTemplate := x509.Certificate{
+			SerialNumber: big.NewInt(time.Now().UnixNano()),
+			Subject: pkix.Name{
+				Organization: []string{"MasqueVPN Client"},
+				CommonName:   clientID,
+			},
+			NotBefore:   time.Now(),
+			NotAfter:    time.Now().Add(3 * 365 * 24 * time.Hour),
+			KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+		clientDER, err := x509.CreateCertificate(rand.Reader, &clientTemplate, caCert, &clientPriv.PublicKey, caKey)
+		if err != nil {
+			http.Error(w, "生成客户端证书失败", 500)
 			return
 		}
-	} else {
-		http.Error(w, "CA私钥格式错误(未知类型)", 500)
-		return
-	}
-	caBlock, _ := pem.Decode(caCertPEM)
-	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
-		http.Error(w, "CA证书格式错误", 500)
-		return
-	}
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	if err != nil {
-		http.Error(w, "解析CA证书失败", 500)
-		return
-	}
-	clientPriv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		http.Error(w, "生成客户端私钥失败", 500)
-		return
-	}
-	// 生成8位字母数字clientID
-	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-	b := make([]rune, 8)
-	randBytes := make([]byte, 8)
-	rand.Read(randBytes)
-	for i := 0; i < 8; i++ {
-		b[i] = letters[int(randBytes[i])%len(letters)]
-	}
-	clientID := "client-" + string(b)
-	clientTemplate := x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject: pkix.Name{
-			Organization: []string{"MasqueVPN Client"},
-			CommonName:   clientID,
-		},
-		NotBefore:   time.Now(),
-		NotAfter:    time.Now().Add(3 * 365 * 24 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}
-	clientDER, err := x509.CreateCertificate(rand.Reader, &clientTemplate, caCert, &clientPriv.PublicKey, caKey)
-	if err != nil {
-		http.Error(w, "生成客户端证书失败", 500)
-		return
-	}
-	clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientDER})
-	clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(clientPriv)})
+		clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientDER})
+		clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(clientPriv)})
 
-	// 读取模板并替换
-	tmplBytes, err := os.ReadFile("config.client.toml.example")
-	if err != nil {
-		http.Error(w, "找不到客户端配置模板", 500)
-		return
-	}
-	tmpl := string(tmplBytes)
-	q := r.URL.Query()
-	// 构造替换map
-	repl := map[string]string{
-		"server_addr":          q.Get("server_addr"),
-		"server_name":          q.Get("server_name"),
-		"mtu":                  q.Get("mtu"),
-		"ca_pem":               string(caCertPEM),
-		"cert_pem":             string(clientCertPEM),
-		"key_pem":              string(clientKeyPEM),
-		"key_log_file":         q.Get("key_log_file"),
-		"log_level":            q.Get("log_level"),
-		"insecure_skip_verify": q.Get("insecure_skip_verify"),
-		"tun_name":             q.Get("tun_name"),
-	}
-	// 默认值处理
-	if repl["server_addr"] == "" {
-		repl["server_addr"] = "<请填写VPN服务器地址:端口>"
-	}
-	if repl["server_name"] == "" {
-		repl["server_name"] = "<请填写服务器名称>"
-	}
-	if repl["mtu"] == "" {
-		repl["mtu"] = "1413"
-	}
-	if repl["log_level"] == "" {
-		repl["log_level"] = "info"
-	}
-	if repl["insecure_skip_verify"] == "" {
-		repl["insecure_skip_verify"] = "false"
-	}
-	// 替换所有 {{key}}
-	for k, v := range repl {
-		tmpl = strings.ReplaceAll(tmpl, "{{"+k+"}}", v)
-	}
-	config := tmpl
+		// 读取模板并替换
+		tmplBytes, err := os.ReadFile("config.client.toml.example")
+		if err != nil {
+			http.Error(w, "找不到客户端配置模板", 500)
+			return
+		}
+		tmpl := string(tmplBytes)
+		q := r.URL.Query()
+		// 构造替换map
+		repl := map[string]string{
+			"server_addr":          q.Get("server_addr"),
+			"server_name":          q.Get("server_name"),
+			"mtu":                  q.Get("mtu"),
+			"ca_pem":               string(caCertPEM),
+			"cert_pem":             string(clientCertPEM),
+			"key_pem":              string(clientKeyPEM),
+			"key_log_file":         q.Get("key_log_file"),
+			"log_level":            q.Get("log_level"),
+			"insecure_skip_verify": q.Get("insecure_skip_verify"),
+			"tun_name":             q.Get("tun_name"),
+		}
+		// 默认值处理
+		if repl["server_addr"] == "" {
+			repl["server_addr"] = "<请填写VPN服务器地址:端口>"
+		}
+		if repl["server_name"] == "" {
+			repl["server_name"] = "<请填写服务器名称>"
+		}
+		if repl["mtu"] == "" {
+			repl["mtu"] = "1413"
+		}
+		if repl["log_level"] == "" {
+			repl["log_level"] = "info"
+		}
+		if repl["insecure_skip_verify"] == "" {
+			repl["insecure_skip_verify"] = "false"
+		}
+		// 替换所有 {{key}}
+		for k, v := range repl {
+			tmpl = strings.ReplaceAll(tmpl, "{{"+k+"}}", v)
+		}
+		config := tmpl
 
-	// 写入数据库
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		http.Error(w, "数据库错误", 500)
-		return
+		// 写入数据库
+		db, err := sql.Open("sqlite3", dbFile)
+		if err != nil {
+			http.Error(w, "数据库错误", 500)
+			return
+		}
+		defer db.Close()
+		_, err = db.Exec("INSERT INTO clients(client_id, cert_pem, key_pem, config, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+			clientID, string(clientCertPEM), string(clientKeyPEM), config)
+		if err != nil {
+			http.Error(w, "写入数据库失败", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"client_id": clientID})
 	}
-	defer db.Close()
-	_, err = db.Exec("INSERT INTO clients(client_id, cert_pem, key_pem, config, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
-		clientID, string(clientCertPEM), string(clientKeyPEM), config)
-	if err != nil {
-		http.Error(w, "写入数据库失败", 500)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"client_id": clientID})
 }
 
 // 下载客户端配置
@@ -421,13 +424,12 @@ func handleDeleteClient(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr,
 }
 
 // 修正：ipConnMap 类型为 map[netip.Addr]*connectip.Conn
-func StartAPIServer(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
+func StartAPIServer(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn, serverConfig interface{}) {
 	initDB()
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 	http.HandleFunc("/api/login", handleLogin)
-	http.HandleFunc("/api/ca_status", requireAuth(handleCAStatus))
 	http.HandleFunc("/api/clients", requireAuth(handleListClients(clientIPMap)))
-	http.HandleFunc("/api/gen_client", requireAuth(handleGenClientV2))
+	http.HandleFunc("/api/gen_client", requireAuth(handleGenClientV2(serverConfig)))
 	http.HandleFunc("/api/download_client", requireAuth(handleDownloadClient))
 	http.HandleFunc("/api/delete_client", requireAuth(handleDeleteClient(ipPoolMu, clientIPMap, ipConnMap)))
 	// 新增服务器配置API

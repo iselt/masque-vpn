@@ -14,41 +14,29 @@ all: build-client build-server
 
 # 分别编译 client
 .PHONY: build-client
-ifeq ($(OS),Windows_NT)
-build-client:
-	cd $(CLIENT_DIR) && go build -o vpn-client main.go
-else
-build-client:
-	cd $(CLIENT_DIR) && go build -o vpn-client main.go
-endif
+build-client: build-client-win build-client-linux
 
 .PHONY: build-client-win
 ifeq ($(OS),Windows_NT)
 build-client-win:
-	cd $(CLIENT_DIR) && set GOOS=windows && set GOARCH=amd64 && go build -o vpn-client.exe main.go
+	cd $(CLIENT_DIR) && set GOOS=windows && set GOARCH=amd64&& go build
 else
 build-client-win:
-	cd $(CLIENT_DIR) && GOOS=windows GOARCH=amd64 go build -o vpn-client.exe main.go
+	cd $(CLIENT_DIR) && GOOS=windows GOARCH=amd64 go build
 endif
 
 .PHONY: build-client-linux
 ifeq ($(OS),Windows_NT)
 build-client-linux:
-	cd $(CLIENT_DIR) && set GOOS=linux && set GOARCH=amd64 && go build -o vpn-client main.go
+	cd $(CLIENT_DIR) && set GOOS=linux && set GOARCH=amd64 && go build
 else
 build-client-linux:
-	cd $(CLIENT_DIR) && GOOS=linux GOARCH=amd64 go build -o vpn-client main.go
+	cd $(CLIENT_DIR) && GOOS=linux GOARCH=amd64 go build
 endif
 
 # 分别编译 server（加 CGO_ENABLED=1）
 .PHONY: build-server
-ifeq ($(OS),Windows_NT)
-build-server:
-	cd $(SERVER_DIR) && set CGO_ENABLED=1 && go build
-else
-build-server:
-	cd $(SERVER_DIR) && CGO_ENABLED=1 go build
-endif
+build-server: build-server-win build-server-linux
 
 .PHONY: build-server-win
 ifeq ($(OS),Windows_NT)
@@ -67,10 +55,6 @@ else
 build-server-linux:
 	cd $(SERVER_DIR) && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build
 endif
-
-# 合并编译命令
-.PHONY: build-all
-build-all: build-client-linux build-client-win build-server-linux build-server-win
 
 # 清理
 .PHONY: clean
