@@ -15,13 +15,14 @@ import (
 	"os/signal"
 	"runtime/pprof"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	connectip "github.com/iselt/connect-ip-go"
 	common "github.com/iselt/masque-vpn/common" // Import local module
-	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
@@ -273,7 +274,7 @@ func main() {
 
 	// 新增：API服务goroutine
 	go func() {
-		// 传递 serverConfig 给 API Server
+		// 传递 serverConfig 给 API Server，并传递监听地址
 		StartAPIServer(&ipPoolMu, clientIPMap, ipConnMap, serverConfig)
 	}()
 
@@ -353,6 +354,10 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 	}
 	log.Printf("Advertised %d routes to client %s", len(routes), clientID)
 
+	// --- 用户组与访问控制策略 ---
+	groupIDs, policies := getGroupsAndPoliciesForClient(clientID)
+	conn.SetAccessControl(clientID, groupIDs, policies)
+
 	// --- 只保留VPN->TUN方向 ---
 	errChan := make(chan error, 1)
 	var wg sync.WaitGroup
@@ -379,4 +384,53 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 		delete(ipConnMap, assignedPrefix.Addr())
 	}
 	ipPoolMu.Unlock()
+}
+
+// 查询clientID所属groupIDs及所有相关访问策略
+func getGroupsAndPoliciesForClient(clientID string) ([]string, []connectip.AccessPolicy) {
+	groupIDs := []string{}
+	policies := []connectip.AccessPolicy{}
+	db, err := sql.Open("sqlite3", "masque_admin.db")
+	if err != nil {
+		log.Printf("[ACL] 打开数据库失败: %v", err)
+		return groupIDs, policies
+	}
+	defer db.Close()
+	// 查询groupIDs
+	rows, err := db.Query("SELECT group_id FROM group_members WHERE client_id = ?", clientID)
+	if err == nil {
+		for rows.Next() {
+			var gid string
+			if err := rows.Scan(&gid); err == nil {
+				groupIDs = append(groupIDs, gid)
+			}
+		}
+		rows.Close()
+	}
+	if len(groupIDs) == 0 {
+		return groupIDs, policies
+	}
+	// 查询所有相关策略
+	query, args := "SELECT action, ip_prefix, priority FROM access_policies WHERE group_id IN ("+strings.Repeat("?,", len(groupIDs)-1)+"?) ORDER BY priority ASC", make([]interface{}, len(groupIDs))
+	for i, gid := range groupIDs {
+		args[i] = gid
+	}
+	rows, err = db.Query(query, args...)
+	if err == nil {
+		for rows.Next() {
+			var action, ipPrefix string
+			var priority int
+			if err := rows.Scan(&action, &ipPrefix, &priority); err == nil {
+				if prefix, err := netip.ParsePrefix(ipPrefix); err == nil {
+					policies = append(policies, connectip.AccessPolicy{
+						Action:   action,
+						IPPrefix: prefix,
+						Priority: priority,
+					})
+				}
+			}
+		}
+		rows.Close()
+	}
+	return groupIDs, policies
 }

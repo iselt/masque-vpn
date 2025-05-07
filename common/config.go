@@ -38,4 +38,7 @@ type ServerConfig struct {
 	LogLevel        string   `toml:"log_level"`
 	ServerName      string   `toml:"server_name"`
 	MTU             int      `toml:"mtu"`
+
+	// 新增：API服务器监听地址
+	APIServerListenAddr string `toml:"api_server.listen_addr"`
 }
