@@ -15,3 +15,6 @@ vpn_server/server.key.pem
 *.crt
 *.csr
 *.srl
+vpn_server/masque_admin.db
+.github
+.vscode

@@ -4,8 +4,8 @@ go 1.24.2
 
 require (
 	github.com/BurntSushi/toml v1.5.0
+	github.com/iselt/connect-ip-go v0.0.0-20250409071859-bc9a9fcba51d
 	github.com/iselt/masque-vpn/common v0.0.0-00010101000000-000000000000
-	github.com/quic-go/connect-ip-go v0.0.0-20241112091351-321f13c3d203
 	github.com/quic-go/quic-go v0.50.1
 	github.com/yosida95/uritemplate/v3 v3.0.2
 )
@@ -34,3 +34,5 @@ require (
 )
 
 replace github.com/iselt/masque-vpn/common => ../common
+
+replace github.com/iselt/connect-ip-go => ../connect-ip-go

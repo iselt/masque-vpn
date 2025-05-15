@@ -4,9 +4,10 @@
 listen_addr = "0.0.0.0:4433"
 
 # mTLS
-cert_file = "server.crt"
-key_file = "server.key"
-ca_file = "ca.crt"
+cert_file = "cert/server.crt"
+key_file = "cert/server.key"
+ca_cert_file = "cert/ca.crt"
+ca_key_file = "cert/ca.key"
 
 # VPN 网络 CIDR，第一个 IP 将作为网关
 assign_cidr = "10.99.0.0/24"
@@ -23,6 +24,11 @@ advertise_routes = [
 log_level = "info"
 
 # 服务器名称（客户端使用它来验证服务器和URI模板）
-server_name = "vpn.example.com"
+server_name = "vpn.example.local"
 
 mtu = 1413
+
+[api_server]
+listen_addr = "0.0.0.0:8080"
+static_dir = "../admin_webui/dist"
+database_path = "masque_admin.db"

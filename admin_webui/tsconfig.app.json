@@ -1,0 +1,28 @@
+{
+  "extends": "@vue/tsconfig/tsconfig.dom.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // "erasableSyntaxOnly": true, // Vite/Vue projects usually don't need this and it can sometimes cause issues with type-only imports
+    "noFallthroughCasesInSwitch": true,
+    // "noUncheckedSideEffectImports": true, // Can be a bit strict for some libraries
+
+    // Added/Modified options
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler", // Recommended for Vite
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true, // Often goes with esModuleInterop
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "baseUrl": ".", // Important for path resolution
+    "paths": { // Optional: for cleaner imports if desired, e.g., "@/*": ["src/*"]
+      "@/*": ["src/*"]
+    },
+    "verbatimModuleSyntax": false // Set to false to allow mixed imports if needed, or use type imports
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "vite.config.ts"], // Added vite.config.ts
+  "exclude": ["node_modules", "dist"]
+}

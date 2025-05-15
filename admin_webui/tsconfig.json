@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+  // Add compilerOptions here if you want global settings, 
+  // otherwise, settings in tsconfig.app.json and tsconfig.node.json will take precedence for their respective scopes.
+  // For a typical Vite project, tsconfig.app.json is the most important for client-side code.
+  "compilerOptions": {
+    "esModuleInterop": true, // Good to have globally for consistency
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "bundler" // Or "node" if preferred, but bundler is modern
+  }
+}

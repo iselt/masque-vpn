@@ -15,13 +15,14 @@ import (
 	"os/signal"
 	"runtime/pprof"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	connectip "github.com/iselt/connect-ip-go"
 	common "github.com/iselt/masque-vpn/common" // Import local module
-	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
@@ -74,7 +75,7 @@ func main() {
 		buf := make([]byte, 2048)
 		for {
 			n, err := tunDev.ReadPacket(buf, 0)
-			if err != nil {
+			if err != nil && err != os.ErrClosed {
 				log.Printf("TUN read error: %v", err)
 				continue
 			}
@@ -100,7 +101,7 @@ func main() {
 					log.Printf("Failed to forward packet to client %s: %v", dstIP, err)
 				}
 			} else {
-				log.Printf("No client found for destination IP %s", dstIP)
+				// log.Printf("No client found for destination IP %s", dstIP)
 			}
 		}
 	}()
@@ -217,7 +218,7 @@ func main() {
 		}
 		// 新增：校验 client_id 是否在数据库中
 		clientIDExists := func(id string) bool {
-			db, err := sql.Open("sqlite3", "masque_admin.db")
+			db, err := sql.Open("sqlite3", serverConfig.APIServer.DatabasePath) // 使用配置的数据库路径
 			if err != nil {
 				log.Printf("Error opening database: %v", err) // Log the error
 				return false
@@ -267,13 +268,13 @@ func main() {
 		ipPoolMu.Unlock()
 		log.Printf("Allocated IP %s to client %s", assignedPrefix, clientID)
 
-		// 处理客户端连接，传递分配的 IP
-		go handleClientConnection(conn, clientID, tunDev, assignedPrefix, routesToAdvertise, ipPool, &ipPoolMu, clientIPMap, ipConnMap)
+		// 处理客户端连接，传递分配的 IP 和数据库路径
+		go handleClientConnection(conn, clientID, tunDev, assignedPrefix, routesToAdvertise, ipPool, &ipPoolMu, clientIPMap, ipConnMap, serverConfig.APIServer.DatabasePath)
 	})
 
 	// 新增：API服务goroutine
 	go func() {
-		// 传递 serverConfig 给 API Server
+		// 传递 serverConfig 给 API Server，并传递监听地址
 		StartAPIServer(&ipPoolMu, clientIPMap, ipConnMap, serverConfig)
 	}()
 
@@ -321,7 +322,7 @@ func main() {
 // handleClientConnection 处理客户端VPN连接
 func handleClientConnection(conn *connectip.Conn, clientID string,
 	tunDev *common.TUNDevice, assignedPrefix netip.Prefix, routes []connectip.IPRoute,
-	ipPool *common.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
+	ipPool *common.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn, dbPath string) { // 新增 dbPath 参数
 	defer conn.Close()
 
 	log.Printf("Handling connection for client %s", clientID)
@@ -353,6 +354,11 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 	}
 	log.Printf("Advertised %d routes to client %s", len(routes), clientID)
 
+	// --- 用户组与访问控制策略 ---
+	// 修改：调用 api_server.go 中的 getGroupsAndPoliciesForClient，并传递 dbPath
+	groupIDs, policies := getGroupsAndPoliciesForClient(dbPath, clientID)
+	conn.SetAccessControl(clientID, groupIDs, policies)
+
 	// --- 只保留VPN->TUN方向 ---
 	errChan := make(chan error, 1)
 	var wg sync.WaitGroup
@@ -379,4 +385,53 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 		delete(ipConnMap, assignedPrefix.Addr())
 	}
 	ipPoolMu.Unlock()
+}
+
+// getGroupsAndPoliciesForClient 也需要 dbPath 参数
+func getGroupsAndPoliciesForClient(dbPath string, clientID string) ([]string, []connectip.AccessPolicy) {
+	groupIDs := []string{}
+	policies := []connectip.AccessPolicy{}
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		log.Printf("[ACL] 打开数据库失败: %v", err)
+		return groupIDs, policies
+	}
+	defer db.Close()
+	// 查询groupIDs
+	rows, err := db.Query("SELECT group_id FROM group_members WHERE client_id = ?", clientID)
+	if err == nil {
+		for rows.Next() {
+			var gid string
+			if err := rows.Scan(&gid); err == nil {
+				groupIDs = append(groupIDs, gid)
+			}
+		}
+		rows.Close()
+	}
+	if len(groupIDs) == 0 {
+		return groupIDs, policies
+	}
+	// 查询所有相关策略
+	query, args := "SELECT action, ip_prefix, priority FROM access_policies WHERE group_id IN ("+strings.Repeat("?,", len(groupIDs)-1)+"?) ORDER BY priority ASC", make([]interface{}, len(groupIDs))
+	for i, gid := range groupIDs {
+		args[i] = gid
+	}
+	rows, err = db.Query(query, args...)
+	if err == nil {
+		for rows.Next() {
+			var action, ipPrefix string
+			var priority int
+			if err := rows.Scan(&action, &ipPrefix, &priority); err == nil {
+				if prefix, err := netip.ParsePrefix(ipPrefix); err == nil {
+					policies = append(policies, connectip.AccessPolicy{
+						Action:   action,
+						IPPrefix: prefix,
+						Priority: priority,
+					})
+				}
+			}
+		}
+		rows.Close()
+	}
+	return groupIDs, policies
 }
