@@ -8,10 +8,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"log"
 	"math/big"
+	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,9 +27,6 @@ import (
 	common "github.com/iselt/masque-vpn/common"
 	_ "github.com/mattn/go-sqlite3"
 )
-
-// 常量
-const dbFile = "masque_admin.db"
 
 // 类型定义
 
@@ -57,8 +57,8 @@ var (
 )
 
 // 数据库相关函数
-func initDB() {
-	db, err := sql.Open("sqlite3", dbFile)
+func initDB(dbPath string) {
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatalf("数据库打开失败: %v", err)
 	}
@@ -74,6 +74,7 @@ func initDB() {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS clients (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		client_id TEXT UNIQUE,
+		client_name TEXT UNIQUE,
 		cert_pem TEXT,
 		key_pem TEXT,
 		config TEXT,
@@ -111,7 +112,8 @@ func initDB() {
 		group_id TEXT,
 		action TEXT,
 		ip_prefix TEXT,
-		priority INTEGER
+		priority INTEGER,
+		remarks TEXT
 	)`)
 	if err != nil {
 		log.Fatalf("创建access_policies表失败: %v", err)
@@ -128,8 +130,8 @@ func initDB() {
 	}
 }
 
-func getServerConfigFromDB() (ServerConfigDB, error) {
-	db, err := sql.Open("sqlite3", dbFile)
+func getServerConfigFromDB(dbPath string) (ServerConfigDB, error) {
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return ServerConfigDB{}, err
 	}
@@ -148,8 +150,8 @@ func getServerConfigFromDB() (ServerConfigDB, error) {
 	return cfg, nil
 }
 
-func saveServerConfigToDB(cfg ServerConfigDB) error {
-	db, err := sql.Open("sqlite3", dbFile)
+func saveServerConfigToDB(dbPath string, cfg ServerConfigDB) error {
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return err
 	}
@@ -161,8 +163,8 @@ func saveServerConfigToDB(cfg ServerConfigDB) error {
 }
 
 // 会话/认证相关函数
-func checkAdminLogin(username, password string) bool {
-	db, err := sql.Open("sqlite3", dbFile)
+func checkAdminLogin(dbPath string, username, password string) bool {
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return false
 	}
@@ -212,33 +214,35 @@ func ginRequireAuth() gin.HandlerFunc {
 
 // Gin API 处理函数
 // 登录
-func ginHandleLogin(c *gin.Context) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
-	}
-	if checkAdminLogin(req.Username, req.Password) {
-		ginSetSession(c, req.Username)
-		c.JSON(200, gin.H{"success": true})
-	} else {
-		c.JSON(401, gin.H{"error": "用户名或密码错误"})
+func ginHandleLogin(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		if checkAdminLogin(dbPath, req.Username, req.Password) {
+			ginSetSession(c, req.Username)
+			c.JSON(200, gin.H{"success": true})
+		} else {
+			c.JSON(401, gin.H{"error": "用户名或密码错误"})
+		}
 	}
 }
 
 // 客户端相关
-func ginHandleListClients(clientIPMap map[string]netip.Addr) gin.HandlerFunc {
+func ginHandleListClients(dbPath string, clientIPMap map[string]netip.Addr) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		db, err := sql.Open("sqlite3", dbFile)
+		db, err := sql.Open("sqlite3", dbPath)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "数据库错误"})
 			return
 		}
 		defer db.Close()
-		rows, err := db.Query("SELECT client_id, created_at FROM clients ORDER BY created_at DESC")
+		rows, err := db.Query("SELECT client_id, client_name, created_at FROM clients ORDER BY created_at DESC")
 		if err != nil {
 			c.JSON(500, gin.H{"error": "查询失败"})
 			return
@@ -246,21 +250,64 @@ func ginHandleListClients(clientIPMap map[string]netip.Addr) gin.HandlerFunc {
 		defer rows.Close()
 		var clients []map[string]interface{}
 		for rows.Next() {
-			var clientID, createdAt string
-			rows.Scan(&clientID, &createdAt)
+			var clientID, clientName, createdAt string
+			rows.Scan(&clientID, &clientName, &createdAt)
 			_, online := clientIPMap[clientID]
+
+			// Fetch group IDs for the client
+			var groupIDs []string
+			groupRows, err := db.Query("SELECT group_id FROM group_members WHERE client_id = ?", clientID)
+			if err != nil {
+				// Log error but continue, client might not be in any group
+				log.Printf("Error fetching groups for client %s: %v", clientID, err)
+			} else {
+				for groupRows.Next() {
+					var groupID string
+					if err := groupRows.Scan(&groupID); err == nil {
+						groupIDs = append(groupIDs, groupID)
+					}
+				}
+				groupRows.Close() // Important to close rows from inner query
+			}
+
 			clients = append(clients, map[string]interface{}{
-				"client_id":  clientID,
-				"created_at": createdAt,
-				"online":     online,
+				"client_id":   clientID,
+				"client_name": clientName,
+				"created_at":  createdAt,
+				"online":      online,
+				"group_ids":   groupIDs, // New field: array of group IDs
 			})
 		}
 		c.JSON(200, clients)
 	}
 }
 
-func ginHandleGenClientV2(serverConfig interface{}) gin.HandlerFunc {
+func ginHandleGenClientV2(dbPath string, serverConfig interface{}) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		clientName := c.Query("client_name")
+		if clientName == "" {
+			c.JSON(400, gin.H{"error": "缺少必填参数 client_name"})
+			return
+		}
+
+		// 检查 client_name 是否重复
+		db, errDb := sql.Open("sqlite3", dbPath)
+		if errDb != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		var count int
+		errDb = db.QueryRow("SELECT COUNT(*) FROM clients WHERE client_name = ?", clientName).Scan(&count)
+		if errDb != nil && errDb != sql.ErrNoRows {
+			c.JSON(500, gin.H{"error": "查询客户端名称失败"})
+			return
+		}
+		if count > 0 {
+			c.JSON(400, gin.H{"error": "客户端名称已存在"})
+			return
+		}
+
 		cfg := serverConfig.(common.ServerConfig)
 		var caCertPEM, caKeyPEM []byte
 		var err error
@@ -380,46 +427,43 @@ func ginHandleGenClientV2(serverConfig interface{}) gin.HandlerFunc {
 		}
 		config := tmpl
 
-		db, err := sql.Open("sqlite3", dbFile)
+		// db 已在前面打开和 defer close
+		_, err = db.Exec("INSERT INTO clients(client_id, client_name, cert_pem, key_pem, config, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+			clientID, clientName, string(clientCertPEM), string(clientKeyPEM), config)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "写入数据库失败"})
+			return
+		}
+		c.JSON(200, gin.H{"client_id": clientID, "client_name": clientName})
+	}
+}
+
+func ginHandleDownloadClient(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Query("id")
+		if id == "" {
+			c.JSON(400, gin.H{"error": "缺少id参数"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "数据库错误"})
 			return
 		}
 		defer db.Close()
-		_, err = db.Exec("INSERT INTO clients(client_id, cert_pem, key_pem, config, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
-			clientID, string(clientCertPEM), string(clientKeyPEM), config)
+		var config string
+		err = db.QueryRow("SELECT config FROM clients WHERE client_id = ?", id).Scan(&config)
 		if err != nil {
-			c.JSON(500, gin.H{"error": "写入数据库失败"})
+			c.JSON(404, gin.H{"error": "未找到该客户端"})
 			return
 		}
-		c.JSON(200, gin.H{"client_id": clientID})
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		c.Header("Content-Disposition", "attachment; filename=config.client.toml")
+		c.String(200, config)
 	}
 }
 
-func ginHandleDownloadClient(c *gin.Context) {
-	id := c.Query("id")
-	if id == "" {
-		c.JSON(400, gin.H{"error": "缺少id参数"})
-		return
-	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	var config string
-	err = db.QueryRow("SELECT config FROM clients WHERE client_id = ?", id).Scan(&config)
-	if err != nil {
-		c.JSON(404, gin.H{"error": "未找到该客户端"})
-		return
-	}
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", "attachment; filename=config.client.toml")
-	c.String(200, config)
-}
-
-func ginHandleDeleteClient(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) gin.HandlerFunc {
+func ginHandleDeleteClient(dbPath string, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Query("id")
 		if id == "" {
@@ -438,7 +482,7 @@ func ginHandleDeleteClient(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Ad
 			}
 			ipPoolMu.Unlock()
 		}
-		db, err := sql.Open("sqlite3", dbFile)
+		db, err := sql.Open("sqlite3", dbPath)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "数据库错误"})
 			return
@@ -454,309 +498,391 @@ func ginHandleDeleteClient(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Ad
 }
 
 // 服务器配置相关
-func ginHandleGetServerConfig(c *gin.Context) {
-	cfg, err := getServerConfigFromDB()
-	if err != nil {
-		cfg = ServerConfigDB{ServerAddr: "", ServerName: "", MTU: 1413}
+func ginHandleGetServerConfig(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg, err := getServerConfigFromDB(dbPath)
+		if err != nil {
+			cfg = ServerConfigDB{ServerAddr: "", ServerName: "", MTU: 1413}
+		}
+		c.JSON(200, cfg)
 	}
-	c.JSON(200, cfg)
 }
 
-func ginHandleSetServerConfig(c *gin.Context) {
-	var req ServerConfigDB
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
+func ginHandleSetServerConfig(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req ServerConfigDB
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		if req.MTU < 576 || req.MTU > 9000 {
+			c.JSON(400, gin.H{"error": "MTU不合法"})
+			return
+		}
+		if err := saveServerConfigToDB(dbPath, req); err != nil {
+			c.JSON(500, gin.H{"error": "保存失败"})
+			return
+		}
+		c.String(200, "ok")
 	}
-	if req.MTU < 576 || req.MTU > 9000 {
-		c.JSON(400, gin.H{"error": "MTU不合法"})
-		return
-	}
-	if err := saveServerConfigToDB(req); err != nil {
-		c.JSON(500, gin.H{"error": "保存失败"})
-		return
-	}
-	c.String(200, "ok")
 }
 
 // 分组相关
-func ginHandleListGroups(c *gin.Context) {
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
+func ginHandleListGroups(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		rows, err := db.Query("SELECT group_id, group_name FROM groups ORDER BY group_name")
+		if err != nil {
+			c.JSON(500, gin.H{"error": "查询失败"})
+			return
+		}
+		defer rows.Close()
+		var groups []map[string]string
+		for rows.Next() {
+			var gid, gname string
+			rows.Scan(&gid, &gname)
+			groups = append(groups, map[string]string{"group_id": gid, "group_name": gname})
+		}
+		c.JSON(200, groups)
 	}
-	defer db.Close()
-	rows, err := db.Query("SELECT group_id, group_name FROM groups ORDER BY group_name")
-	if err != nil {
-		c.JSON(500, gin.H{"error": "查询失败"})
-		return
-	}
-	defer rows.Close()
-	var groups []map[string]string
-	for rows.Next() {
-		var gid, gname string
-		rows.Scan(&gid, &gname)
-		groups = append(groups, map[string]string{"group_id": gid, "group_name": gname})
-	}
-	c.JSON(200, groups)
 }
 
-func ginHandleAddGroup(c *gin.Context) {
-	var req struct {
-		GroupName string `json:"group_name"`
+func ginHandleAddGroup(dbPath string, serverCfg common.ServerConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			GroupName string `json:"group_name"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "无效的请求"})
+			return
+		}
+		if req.GroupName == "" {
+			c.JSON(400, gin.H{"error": "组名不能为空"})
+			return
+		}
+
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+
+		gid := uuid.NewString()
+		_, err = db.Exec("INSERT INTO groups(group_id, group_name) VALUES (?, ?)", gid, req.GroupName)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				c.JSON(400, gin.H{"error": "组名已存在"})
+			} else {
+				c.JSON(500, gin.H{"error": "添加组失败"})
+			}
+			return
+		}
+
+		// 自动为新组添加基于 AdvertiseRoutes 的允许策略
+		if len(serverCfg.AdvertiseRoutes) > 0 {
+			tx, err := db.Begin()
+			if err != nil {
+				log.Printf("为组 %s 添加默认策略时开启事务失败: %v", gid, err)
+			} else {
+				stmt, err := tx.Prepare("INSERT INTO access_policies(policy_id, group_id, action, ip_prefix, priority, remarks) VALUES (?, ?, ?, ?, ?, ?)")
+				if err != nil {
+					log.Printf("为组 %s 添加默认策略时准备语句失败: %v", gid, err)
+				} else {
+					defer stmt.Close()
+					defaultPriority := 1000
+					defaultRemarks := "默认策略"
+					for _, routeStr := range serverCfg.AdvertiseRoutes {
+						pid := uuid.NewString()
+						_, err := stmt.Exec(pid, gid, "allow", routeStr, defaultPriority, defaultRemarks)
+						if err != nil {
+							log.Printf("为组 %s 添加路由 %s 的默认策略失败: %v", gid, routeStr, err)
+						} else {
+							log.Printf("成功为组 %s 添加路由 %s 的默认允许策略 (ID: %s, Priority: %d, Remarks: %s)", gid, routeStr, pid, defaultPriority, defaultRemarks)
+						}
+					}
+					err = tx.Commit()
+					if err != nil {
+						log.Printf("为组 %s 添加默认策略时提交事务失败: %v", gid, err)
+						_ = tx.Rollback()
+					} else {
+						go refreshAccessControlForGroup(dbPath, gid, globalClientIPMap, globalIPConnMap)
+					}
+				}
+			}
+		}
+
+		c.JSON(200, gin.H{"success": true, "group_id": gid, "group_name": req.GroupName})
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.GroupName == "" {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
-	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	gid := uuid.NewString()
-	_, err = db.Exec("INSERT INTO groups(group_id, group_name) VALUES (?, ?)", gid, req.GroupName)
-	if err != nil {
-		c.JSON(400, gin.H{"error": "添加失败，组名可能重复"})
-		return
-	}
-	c.String(200, "ok")
 }
 
-func ginHandleDeleteGroup(c *gin.Context) {
-	gid := c.Query("id")
-	if gid == "" {
-		c.JSON(400, gin.H{"error": "缺少id参数"})
-		return
+func ginHandleDeleteGroup(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		gid := c.Query("id")
+		if gid == "" {
+			c.JSON(400, gin.H{"error": "缺少id参数"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		_, _ = db.Exec("DELETE FROM group_members WHERE group_id = ?", gid)
+		_, err = db.Exec("DELETE FROM groups WHERE group_id = ?", gid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "删除失败"})
+			return
+		}
+		c.String(200, "ok")
 	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	_, _ = db.Exec("DELETE FROM group_members WHERE group_id = ?", gid)
-	_, err = db.Exec("DELETE FROM groups WHERE group_id = ?", gid)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "删除失败"})
-		return
-	}
-	c.String(200, "ok")
 }
 
-func ginHandleUpdateGroup(c *gin.Context) {
-	var req struct{ GroupID, GroupName string }
-	if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.GroupName == "" {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
+func ginHandleUpdateGroup(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct{ GroupID, GroupName string }
+		if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.GroupName == "" {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		_, err = db.Exec("UPDATE groups SET group_name = ? WHERE group_id = ?", req.GroupName, req.GroupID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "更新失败"})
+			return
+		}
+		c.String(200, "ok")
 	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	_, err = db.Exec("UPDATE groups SET group_name = ? WHERE group_id = ?", req.GroupName, req.GroupID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "更新失败"})
-		return
-	}
-	c.String(200, "ok")
 }
 
-func ginHandleListGroupMembers(c *gin.Context) {
-	gid := c.Query("group_id")
-	if gid == "" {
-		c.JSON(400, gin.H{"error": "缺少group_id参数"})
-		return
+func ginHandleListGroupMembers(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		gid := c.Query("group_id")
+		if gid == "" {
+			c.JSON(400, gin.H{"error": "缺少group_id参数"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		rows, err := db.Query("SELECT client_id FROM group_members WHERE group_id = ?", gid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "查询失败"})
+			return
+		}
+		defer rows.Close()
+		var members []string
+		for rows.Next() {
+			var cid string
+			rows.Scan(&cid)
+			members = append(members, cid)
+		}
+		c.JSON(200, members)
 	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	rows, err := db.Query("SELECT client_id FROM group_members WHERE group_id = ?", gid)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "查询失败"})
-		return
-	}
-	defer rows.Close()
-	var members []string
-	for rows.Next() {
-		var cid string
-		rows.Scan(&cid)
-		members = append(members, cid)
-	}
-	c.JSON(200, members)
 }
 
-func ginHandleAddGroupMember(c *gin.Context) {
-	var req struct{ GroupID, ClientID string }
-	if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.ClientID == "" {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
+func ginHandleAddGroupMember(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct{ GroupID, ClientID string }
+		if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.ClientID == "" {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		_, err = db.Exec("INSERT OR IGNORE INTO group_members(group_id, client_id) VALUES (?, ?)", req.GroupID, req.ClientID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "添加失败"})
+			return
+		}
+		c.String(200, "ok")
 	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	_, err = db.Exec("INSERT OR IGNORE INTO group_members(group_id, client_id) VALUES (?, ?)", req.GroupID, req.ClientID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "添加失败"})
-		return
-	}
-	c.String(200, "ok")
 }
 
-func ginHandleRemoveGroupMember(c *gin.Context) {
-	var req struct{ GroupID, ClientID string }
-	if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.ClientID == "" {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
+func ginHandleRemoveGroupMember(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct{ GroupID, ClientID string }
+		if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.ClientID == "" {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		_, err = db.Exec("DELETE FROM group_members WHERE group_id = ? AND client_id = ?", req.GroupID, req.ClientID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "移除失败"})
+			return
+		}
+		c.String(200, "ok")
 	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	_, err = db.Exec("DELETE FROM group_members WHERE group_id = ? AND client_id = ?", req.GroupID, req.ClientID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "移除失败"})
-		return
-	}
-	c.String(200, "ok")
 }
 
 // 策略相关
-func ginHandleListPolicies(c *gin.Context) {
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	rows, err := db.Query("SELECT policy_id, group_id, action, ip_prefix, priority FROM access_policies ORDER BY priority ASC")
-	if err != nil {
-		c.JSON(500, gin.H{"error": "查询失败"})
-		return
-	}
-	defer rows.Close()
-	var policies []map[string]interface{}
-	for rows.Next() {
-		var pid, gid, action, ipPrefix string
-		var priority int
-		rows.Scan(&pid, &gid, &action, &ipPrefix, &priority)
-		policies = append(policies, map[string]interface{}{
-			"policy_id": pid, "group_id": gid, "action": action, "ip_prefix": ipPrefix, "priority": priority,
-		})
-	}
-	c.JSON(200, policies)
-}
-
-func ginHandleAddPolicy(c *gin.Context) {
-	var req struct {
-		GroupID  string `json:"group_id"`
-		Action   string `json:"action"`
-		IPPrefix string `json:"ip_prefix"`
-		Priority int    `json:"priority"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.Action == "" || req.IPPrefix == "" {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
-	}
-	if req.Action != "allow" && req.Action != "deny" {
-		c.JSON(400, gin.H{"error": "action必须为allow或deny"})
-		return
-	}
-	if _, err := netip.ParsePrefix(req.IPPrefix); err != nil {
-		c.JSON(400, gin.H{"error": "ip_prefix格式错误"})
-		return
-	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	pid := uuid.NewString()
-	_, err = db.Exec("INSERT INTO access_policies(policy_id, group_id, action, ip_prefix, priority) VALUES (?, ?, ?, ?, ?)", pid, req.GroupID, req.Action, req.IPPrefix, req.Priority)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "添加失败"})
-		return
-	}
-	c.String(200, "ok")
-	go refreshAccessControlForGroup(req.GroupID, globalClientIPMap, globalIPConnMap)
-}
-
-func ginHandleDeletePolicy(c *gin.Context) {
-	pid := c.Query("id")
-	if pid == "" {
-		c.JSON(400, gin.H{"error": "缺少id参数"})
-		return
-	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	var groupID string
-	db.QueryRow("SELECT group_id FROM access_policies WHERE policy_id = ?", pid).Scan(&groupID)
-	_, err = db.Exec("DELETE FROM access_policies WHERE policy_id = ?", pid)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "删除失败"})
-		return
-	}
-	c.String(200, "ok")
-	if groupID != "" {
-		go refreshAccessControlForGroup(groupID, globalClientIPMap, globalIPConnMap)
+func ginHandleListPolicies(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		rows, err := db.Query("SELECT policy_id, group_id, action, ip_prefix, priority, remarks FROM access_policies ORDER BY priority ASC")
+		if err != nil {
+			c.JSON(500, gin.H{"error": "查询失败"})
+			return
+		}
+		defer rows.Close()
+		var policies []map[string]interface{}
+		for rows.Next() {
+			var pid, gid, action, ipPrefix string
+			var priority int
+			var remarks sql.NullString
+			if err := rows.Scan(&pid, &gid, &action, &ipPrefix, &priority, &remarks); err != nil {
+				log.Printf("Error scanning policy: %v", err)
+				continue
+			}
+			policyMap := map[string]interface{}{
+				"policy_id": pid, "group_id": gid, "action": action, "ip_prefix": ipPrefix, "priority": priority,
+			}
+			if remarks.Valid {
+				policyMap["remarks"] = remarks.String
+			} else {
+				policyMap["remarks"] = ""
+			}
+			policies = append(policies, policyMap)
+		}
+		c.JSON(200, policies)
 	}
 }
 
-func ginHandleUpdatePolicy(c *gin.Context) {
-	var req struct {
-		PolicyID string `json:"policy_id"`
-		GroupID  string `json:"group_id"`
-		Action   string `json:"action"`
-		IPPrefix string `json:"ip_prefix"`
-		Priority int    `json:"priority"`
+func ginHandleAddPolicy(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			GroupID  string `json:"group_id"`
+			Action   string `json:"action"`
+			IPPrefix string `json:"ip_prefix"`
+			Priority int    `json:"priority"`
+			Remarks  string `json:"remarks"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || req.GroupID == "" || req.Action == "" || req.IPPrefix == "" {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		if req.Action != "allow" && req.Action != "deny" {
+			c.JSON(400, gin.H{"error": "action必须为allow或deny"})
+			return
+		}
+		if _, err := netip.ParsePrefix(req.IPPrefix); err != nil {
+			c.JSON(400, gin.H{"error": "ip_prefix格式错误"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		pid := uuid.NewString()
+		_, err = db.Exec("INSERT INTO access_policies(policy_id, group_id, action, ip_prefix, priority, remarks) VALUES (?, ?, ?, ?, ?, ?)", pid, req.GroupID, req.Action, req.IPPrefix, req.Priority, req.Remarks)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "添加失败"})
+			return
+		}
+		c.String(200, "ok")
+		go refreshAccessControlForGroup(dbPath, req.GroupID, globalClientIPMap, globalIPConnMap)
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.PolicyID == "" || req.GroupID == "" || req.Action == "" || req.IPPrefix == "" {
-		c.JSON(400, gin.H{"error": "参数错误"})
-		return
+}
+
+func ginHandleDeletePolicy(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		pid := c.Query("id")
+		if pid == "" {
+			c.JSON(400, gin.H{"error": "缺少id参数"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		var groupID string
+		db.QueryRow("SELECT group_id FROM access_policies WHERE policy_id = ?", pid).Scan(&groupID)
+		_, err = db.Exec("DELETE FROM access_policies WHERE policy_id = ?", pid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "删除失败"})
+			return
+		}
+		c.String(200, "ok")
+		if groupID != "" {
+			go refreshAccessControlForGroup(dbPath, groupID, globalClientIPMap, globalIPConnMap)
+		}
 	}
-	if req.Action != "allow" && req.Action != "deny" {
-		c.JSON(400, gin.H{"error": "action必须为allow或deny"})
-		return
+}
+
+func ginHandleUpdatePolicy(dbPath string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			PolicyID string `json:"policy_id"`
+			GroupID  string `json:"group_id"`
+			Action   string `json:"action"`
+			IPPrefix string `json:"ip_prefix"`
+			Priority int    `json:"priority"`
+			Remarks  string `json:"remarks"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || req.PolicyID == "" || req.GroupID == "" || req.Action == "" || req.IPPrefix == "" {
+			c.JSON(400, gin.H{"error": "参数错误"})
+			return
+		}
+		if req.Action != "allow" && req.Action != "deny" {
+			c.JSON(400, gin.H{"error": "action必须为allow或deny"})
+			return
+		}
+		if _, err := netip.ParsePrefix(req.IPPrefix); err != nil {
+			c.JSON(400, gin.H{"error": "ip_prefix格式错误"})
+			return
+		}
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库错误"})
+			return
+		}
+		defer db.Close()
+		_, err = db.Exec("UPDATE access_policies SET group_id=?, action=?, ip_prefix=?, priority=?, remarks=? WHERE policy_id=?", req.GroupID, req.Action, req.IPPrefix, req.Priority, req.Remarks, req.PolicyID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "更新失败"})
+			return
+		}
+		c.String(200, "ok")
+		go refreshAccessControlForGroup(dbPath, req.GroupID, globalClientIPMap, globalIPConnMap)
 	}
-	if _, err := netip.ParsePrefix(req.IPPrefix); err != nil {
-		c.JSON(400, gin.H{"error": "ip_prefix格式错误"})
-		return
-	}
-	db, err := sql.Open("sqlite3", dbFile)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "数据库错误"})
-		return
-	}
-	defer db.Close()
-	_, err = db.Exec("UPDATE access_policies SET group_id=?, action=?, ip_prefix=?, priority=? WHERE policy_id=?", req.GroupID, req.Action, req.IPPrefix, req.Priority, req.PolicyID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "更新失败"})
-		return
-	}
-	c.String(200, "ok")
-	go refreshAccessControlForGroup(req.GroupID, globalClientIPMap, globalIPConnMap)
 }
 
 // 访问控制/辅助函数
-func refreshAccessControlForGroup(groupID string, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
-	db, err := sql.Open("sqlite3", dbFile)
+func refreshAccessControlForGroup(dbPath string, groupID string, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Printf("[ACL] 刷新策略时打开数据库失败: %v", err)
 		return
@@ -781,7 +907,7 @@ func refreshAccessControlForGroup(groupID string, clientIPMap map[string]netip.A
 		if ip, ok := clientIPMap[clientID]; ok {
 			if conn, ok2 := ipConnMap[ip]; ok2 {
 				// 3. 重新查 groupIDs 和 policies
-				groupIDs, policies := getGroupsAndPoliciesForClient(clientID)
+				groupIDs, policies := getGroupsAndPoliciesForClient(dbPath, clientID)
 				conn.SetAccessControl(clientID, groupIDs, policies)
 				log.Printf("[ACL] 已刷新客户端 %s 的访问控制策略", clientID)
 			}
@@ -790,53 +916,160 @@ func refreshAccessControlForGroup(groupID string, clientIPMap map[string]netip.A
 }
 
 // 主启动函数
-func StartAPIServer(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn, serverConfig interface{}) {
+func StartAPIServer(ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn, serverCfg common.ServerConfig) {
+	log.Println("API Server is starting or restarting. Session store is being initialized.")
 	globalClientIPMap = clientIPMap
 	globalIPConnMap = ipConnMap
 
-	initDB()
-	// 初始化 Gin
-	r := gin.Default()
+	// 使用配置的数据库路径
+	dbPath := serverCfg.APIServer.DatabasePath
+	if dbPath == "" {
+		dbPath = "masque_admin.db" // 默认值
+		log.Printf("APIServerDatabasePath 未配置，使用默认值: %s", dbPath)
+	}
 
-	// 静态文件服务
-	r.Static("/", "./web")
+	initDB(dbPath)
+
+	// 初始化服务器配置（如果数据库中不存在）
+	_, err := getServerConfigFromDB(dbPath)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Println("No server config found in DB. Initializing from server.toml settings...")
+			initialDbConfig := ServerConfigDB{
+				ServerAddr: serverCfg.ListenAddr, // VPN 服务器的监听地址，供客户端连接
+				ServerName: serverCfg.ServerName,
+				MTU:        serverCfg.MTU,
+			}
+			if initialDbConfig.MTU == 0 { // 如果 server.toml 中 MTU 未设置或为0，则使用默认值
+				initialDbConfig.MTU = 1413
+				log.Printf("MTU not set or is 0 in server.toml, defaulting to %d for DB initialization", initialDbConfig.MTU)
+			}
+
+			if errSave := saveServerConfigToDB(dbPath, initialDbConfig); errSave != nil {
+				log.Printf("Failed to save initial server config to DB: %v", errSave)
+			} else {
+				log.Printf("Successfully saved initial server config (ServerAddr: %s, ServerName: %s, MTU: %d) to DB.", initialDbConfig.ServerAddr, initialDbConfig.ServerName, initialDbConfig.MTU)
+			}
+		} else {
+			log.Printf("Error fetching server config from DB during initialization check: %v", err)
+		}
+	} else {
+		log.Println("Existing server config found in DB. Skipping initialization from server.toml.")
+	}
+
+	// 初始化 Gin
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.Default()
 
 	// API 路由分组
 	api := r.Group("/api")
 	{
-		api.POST("/login", ginHandleLogin)
+		api.POST("/login", ginHandleLogin(dbPath))
+		// 新增登出接口
+		api.POST("/logout", func(c *gin.Context) {
+			sid, err := c.Cookie("masque_admin_sid")
+			if err == nil && sid != "" {
+				sessionMu.Lock()
+				delete(sessionStore, sid)
+				sessionMu.Unlock()
+			}
+			// 清除 cookie
+			c.SetCookie("masque_admin_sid", "", -1, "/", "", false, true)
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": "Logged out successfully"})
+		})
 
 		// 需要认证的接口
 		auth := api.Group("").Use(ginRequireAuth())
 		{
-			auth.GET("/clients", ginHandleListClients(clientIPMap))
-			auth.POST("/gen_client", ginHandleGenClientV2(serverConfig))
-			auth.GET("/download_client", ginHandleDownloadClient)
-			auth.POST("/delete_client", ginHandleDeleteClient(ipPoolMu, clientIPMap, ipConnMap))
+			// 新增会话检查接口
+			auth.GET("/auth/check", func(c *gin.Context) {
+				sid, _ := c.Cookie("masque_admin_sid") // Cookie由ginRequireAuth保证存在
+				sessionMu.Lock()
+				username, ok := sessionStore[sid]
+				sessionMu.Unlock()
 
-			auth.GET("/server_config", ginHandleGetServerConfig)
-			auth.POST("/server_config", ginHandleSetServerConfig)
+				if ok {
+					c.JSON(http.StatusOK, gin.H{"loggedIn": true, "username": username})
+				} else {
+					// 理论上 ginRequireAuth 会处理未授权，这里作为额外保障
+					c.JSON(http.StatusUnauthorized, gin.H{"loggedIn": false})
+				}
+			})
+			auth.GET("/clients", ginHandleListClients(dbPath, clientIPMap))
+			auth.POST("/gen_client", ginHandleGenClientV2(dbPath, serverCfg)) // 传递 dbPath
+			auth.GET("/download_client", ginHandleDownloadClient(dbPath))
+			auth.POST("/delete_client", ginHandleDeleteClient(dbPath, ipPoolMu, clientIPMap, ipConnMap))
 
-			auth.GET("/groups", ginHandleListGroups)
-			auth.POST("/groups", ginHandleAddGroup)
-			auth.POST("/groups/delete", ginHandleDeleteGroup)
-			auth.POST("/groups/update", ginHandleUpdateGroup)
+			auth.GET("/server_config", ginHandleGetServerConfig(dbPath))
+			auth.POST("/server_config", ginHandleSetServerConfig(dbPath))
 
-			auth.GET("/groups/members", ginHandleListGroupMembers)
-			auth.POST("/groups/members", ginHandleAddGroupMember)
-			auth.POST("/groups/members/remove", ginHandleRemoveGroupMember)
+			auth.GET("/groups", ginHandleListGroups(dbPath))
+			auth.POST("/groups", ginHandleAddGroup(dbPath, serverCfg)) // Pass serverCfg
+			auth.POST("/groups/delete", ginHandleDeleteGroup(dbPath))
+			auth.POST("/groups/update", ginHandleUpdateGroup(dbPath))
 
-			auth.GET("/policies", ginHandleListPolicies)
-			auth.POST("/policies", ginHandleAddPolicy)
-			auth.POST("/policies/delete", ginHandleDeletePolicy)
-			auth.POST("/policies/update", ginHandleUpdatePolicy)
+			auth.GET("/groups/members", ginHandleListGroupMembers(dbPath))
+			auth.POST("/groups/members", ginHandleAddGroupMember(dbPath))
+			auth.POST("/groups/members/remove", ginHandleRemoveGroupMember(dbPath))
+
+			auth.GET("/policies", ginHandleListPolicies(dbPath))
+			auth.POST("/policies", ginHandleAddPolicy(dbPath))
+			auth.POST("/policies/delete", ginHandleDeletePolicy(dbPath))
+			auth.POST("/policies/update", ginHandleUpdatePolicy(dbPath))
 		}
 	}
 
+	// 静态文件服务
+	staticDir := serverCfg.APIServer.StaticDir
+	if staticDir == "" {
+		staticDir = "./web" // 默认值
+		log.Printf("APIServerStaticDir 未配置，使用默认值: %s", staticDir)
+	}
+
+	// Serve static assets from the 'assets' subdirectory (e.g., /assets/app.js)
+	r.StaticFS("/assets", http.Dir(filepath.Join(staticDir, "assets")))
+
+	// Serve index.html for the root path
+	r.GET("/", func(c *gin.Context) {
+		c.File(filepath.Join(staticDir, "index.html"))
+	})
+
+	// Handle other GET requests:
+	// 1. Try to serve a static file from the root of staticDir if it exists (e.g., /favicon.ico)
+	// 2. If not found, serve index.html (for SPA client-side routing)
+	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api") { // API routes should be matched before NoRoute
+			c.JSON(404, gin.H{"error": "API endpoint not found"})
+			return
+		}
+
+		if c.Request.Method == "GET" {
+			// Do not handle /assets/* here, it's done by StaticFS
+			// Do not handle / here, it's done by r.GET("/")
+			if !strings.HasPrefix(c.Request.URL.Path, "/assets/") && c.Request.URL.Path != "/" {
+				// Attempt to serve a static file from the root of staticDir
+				filePath := filepath.Join(staticDir, c.Request.URL.Path)
+
+				// Check if the file exists and is not a directory
+				if stat, err := os.Stat(filePath); err == nil && !stat.IsDir() {
+					c.File(filePath)
+					return
+				}
+			}
+			// If file not found, or it was a directory, or path was /assets/* or /, serve index.html for SPA.
+			c.File(filepath.Join(staticDir, "index.html"))
+			return
+		}
+
+		// For non-GET requests or other unhandled scenarios
+		c.JSON(404, gin.H{"error": "Resource not found"})
+	})
+
 	// 读取监听地址
-	listenAddr := ":8080" // 默认
-	if cfg, ok := serverConfig.(common.ServerConfig); ok && cfg.APIServerListenAddr != "" {
-		listenAddr = cfg.APIServerListenAddr
+	listenAddr := serverCfg.APIServer.ListenAddr
+	if listenAddr == "" {
+		listenAddr = ":8080" // 默认
+		log.Printf("APIServerListenAddr 未配置，使用默认值: %s", listenAddr)
 	}
 	log.Printf("API server (Gin) listening on %s ...", listenAddr)
 	r.Run(listenAddr)

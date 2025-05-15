@@ -19,6 +19,13 @@ type ClientConfig struct {
 	MTU                int    `toml:"mtu"`
 }
 
+// APIServerConfig 结构体，用于存储 API 服务器的配置信息
+type APIServerConfig struct {
+	ListenAddr   string `toml:"listen_addr"`
+	StaticDir    string `toml:"static_dir"`
+	DatabasePath string `toml:"database_path"`
+}
+
 // ServerConfig 结构体，用于存储从 TOML 文件加载的服务端配置信息
 // 可供 vpn_server/main.go 使用
 //
@@ -39,6 +46,6 @@ type ServerConfig struct {
 	ServerName      string   `toml:"server_name"`
 	MTU             int      `toml:"mtu"`
 
-	// 新增：API服务器监听地址
-	APIServerListenAddr string `toml:"api_server.listen_addr"`
+	// 修改：使用嵌套结构体来映射 [api_server] 表
+	APIServer APIServerConfig `toml:"api_server"`
 }

@@ -30,3 +30,5 @@ mtu = 1413
 
 [api_server]
 listen_addr = "0.0.0.0:8080"
+static_dir = "../admin_webui/dist"
+database_path = "masque_admin.db"

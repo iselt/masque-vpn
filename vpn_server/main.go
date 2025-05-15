@@ -75,7 +75,7 @@ func main() {
 		buf := make([]byte, 2048)
 		for {
 			n, err := tunDev.ReadPacket(buf, 0)
-			if err != nil {
+			if err != nil && err != os.ErrClosed {
 				log.Printf("TUN read error: %v", err)
 				continue
 			}
@@ -101,7 +101,7 @@ func main() {
 					log.Printf("Failed to forward packet to client %s: %v", dstIP, err)
 				}
 			} else {
-				log.Printf("No client found for destination IP %s", dstIP)
+				// log.Printf("No client found for destination IP %s", dstIP)
 			}
 		}
 	}()
@@ -218,7 +218,7 @@ func main() {
 		}
 		// 新增：校验 client_id 是否在数据库中
 		clientIDExists := func(id string) bool {
-			db, err := sql.Open("sqlite3", "masque_admin.db")
+			db, err := sql.Open("sqlite3", serverConfig.APIServer.DatabasePath) // 使用配置的数据库路径
 			if err != nil {
 				log.Printf("Error opening database: %v", err) // Log the error
 				return false
@@ -268,8 +268,8 @@ func main() {
 		ipPoolMu.Unlock()
 		log.Printf("Allocated IP %s to client %s", assignedPrefix, clientID)
 
-		// 处理客户端连接，传递分配的 IP
-		go handleClientConnection(conn, clientID, tunDev, assignedPrefix, routesToAdvertise, ipPool, &ipPoolMu, clientIPMap, ipConnMap)
+		// 处理客户端连接，传递分配的 IP 和数据库路径
+		go handleClientConnection(conn, clientID, tunDev, assignedPrefix, routesToAdvertise, ipPool, &ipPoolMu, clientIPMap, ipConnMap, serverConfig.APIServer.DatabasePath)
 	})
 
 	// 新增：API服务goroutine
@@ -322,7 +322,7 @@ func main() {
 // handleClientConnection 处理客户端VPN连接
 func handleClientConnection(conn *connectip.Conn, clientID string,
 	tunDev *common.TUNDevice, assignedPrefix netip.Prefix, routes []connectip.IPRoute,
-	ipPool *common.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn) {
+	ipPool *common.IPPool, ipPoolMu *sync.Mutex, clientIPMap map[string]netip.Addr, ipConnMap map[netip.Addr]*connectip.Conn, dbPath string) { // 新增 dbPath 参数
 	defer conn.Close()
 
 	log.Printf("Handling connection for client %s", clientID)
@@ -355,7 +355,8 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 	log.Printf("Advertised %d routes to client %s", len(routes), clientID)
 
 	// --- 用户组与访问控制策略 ---
-	groupIDs, policies := getGroupsAndPoliciesForClient(clientID)
+	// 修改：调用 api_server.go 中的 getGroupsAndPoliciesForClient，并传递 dbPath
+	groupIDs, policies := getGroupsAndPoliciesForClient(dbPath, clientID)
 	conn.SetAccessControl(clientID, groupIDs, policies)
 
 	// --- 只保留VPN->TUN方向 ---
@@ -386,11 +387,11 @@ func handleClientConnection(conn *connectip.Conn, clientID string,
 	ipPoolMu.Unlock()
 }
 
-// 查询clientID所属groupIDs及所有相关访问策略
-func getGroupsAndPoliciesForClient(clientID string) ([]string, []connectip.AccessPolicy) {
+// getGroupsAndPoliciesForClient 也需要 dbPath 参数
+func getGroupsAndPoliciesForClient(dbPath string, clientID string) ([]string, []connectip.AccessPolicy) {
 	groupIDs := []string{}
 	policies := []connectip.AccessPolicy{}
-	db, err := sql.Open("sqlite3", "masque_admin.db")
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Printf("[ACL] 打开数据库失败: %v", err)
 		return groupIDs, policies
