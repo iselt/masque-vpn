@@ -1,5 +1,7 @@
 # masque-vpn
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iselt/masque-vpn)
+
 A VPN implementation based on the MASQUE(CONNECT-IP) protocol
 
 **⚠ This project is in early development and is not ready for production use. It is intended for educational purposes and to demonstrate the MASQUE protocol.**
