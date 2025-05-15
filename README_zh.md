@@ -1,5 +1,7 @@
 # masque-vpn
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iselt/masque-vpn)
+
 基于 MASQUE(CONNECT-IP) 协议的 VPN 实现
 
 **⚠ 本项目处于早期开发阶段，暂不适合生产环境，仅供学习和 MASQUE 协议演示用途。**
