@@ -130,8 +130,8 @@ masque-vpn/
 ├── common/           # 共享代码和工具
 ├── vpn_client/       # 客户端实现
 ├── vpn_server/       # 服务器实现
-│   ├── cert/         # 证书生成脚本
-│   └── web/          # Web 界面资源
+│   └── cert/         # 证书生成脚本
+├── admin_webui/      # Web 界面资源
 └── README_zh.md
 ```
 
