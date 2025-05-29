@@ -130,8 +130,8 @@ masque-vpn/
 ├── common/           # Shared code and utilities
 ├── vpn_client/       # Client implementation
 ├── vpn_server/       # Server implementation
-│   ├── cert/         # Certificate generation scripts
-│   └── web/          # Web UI assets
+│   └── cert/         # Certificate generation scripts
+├── admin_webui/      # Web UI assets
 └── README.md
 ```
 
