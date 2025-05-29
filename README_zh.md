@@ -6,6 +6,8 @@
 
 **⚠️ 本项目处于早期开发阶段，暂不适合生产环境使用，仅供学习和 MASQUE 协议演示用途。**
 
+**本项目包含了一个子模块 `iselt/connect-ip-go`, 请使用 `--recurse-submodules` 克隆项目：`git clone --recurse-submodules https://github.com/iselt/masque-vpn.git`**
+
 ## 特性
 
 - **现代协议**: 基于 QUIC 和 MASQUE CONNECT-IP 构建
