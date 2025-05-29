@@ -6,6 +6,8 @@ A VPN implementation based on the MASQUE (CONNECT-IP) protocol using QUIC transp
 
 **⚠️ This project is in early development and is not ready for production use. It is intended for educational purposes and to demonstrate the MASQUE protocol.**
 
+**This project includes a submodule `connect-ip-go`. Please clone the repository with `--recurse-submodules`: `git clone --recurse-submodules https://github.com/iselt/masque-vpn.git`**
+
 ## Features
 
 - **Modern Protocols**: Built on QUIC and MASQUE CONNECT-IP
