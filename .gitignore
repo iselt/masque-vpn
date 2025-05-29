@@ -18,3 +18,4 @@ vpn_server/server.key.pem
 vpn_server/masque_admin.db
 .github
 .vscode
+vpn_client/ISTB.toml
